@@ -4,6 +4,8 @@
 habits in one popup, with the two actions that belong on a bar: tick a task
 off, check a habit in.
 
+![The TickTick panel: tasks with tag colours, habits with a streak, and a focus timer](preview.png)
+
 The bar shows a count (` 3  2♦` — three tasks due, two habits open) and
 turns urgent when something is late. Left click opens the panel.
 
