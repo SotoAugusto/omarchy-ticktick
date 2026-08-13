@@ -19,6 +19,8 @@ turns urgent when something is late. Left click opens the panel.
   it is sent, so a misclick costs nothing
 - **Focus timer** — a pomodoro that uses your TickTick durations, counts down
   in the bar, and uploads each finished block to your focus statistics
+- Fully keyboard driven, with an in-panel shortcut list
+- Tag colours come straight from TickTick; due state follows your Omarchy theme
 - Everything is theme aware and follows the bar's vertical/horizontal layout
 
 ## Requirements
@@ -196,9 +198,21 @@ Configure in Setup > Plugins, or inline on the bar entry in
 | Bar | left | open the panel |
 | Bar | middle | sync now |
 | Bar | right | open the TickTick web app |
+| Panel | `↑` `↓` | move between tasks and habits |
+| Panel | `enter` | complete the task / check the habit in |
+| Panel | `u` | undo the held action |
 | Panel | `a` | focus the quick-add field |
 | Panel | `r` | sync now |
-| Panel | `esc` | close |
+| Panel | `p` | start or pause focus |
+| Panel | `s` | discard the focus block |
+| Panel | `g` / `G` | first / last row |
+| Panel | `tab` | next bar panel |
+| Panel | `?` | show or hide the shortcut list |
+| Panel | `esc` | back out one layer, then close |
+
+The shortcut list is reachable both ways: `?` from the keyboard, and the
+**?** button in the panel header for the mouse. A shortcut list you can only
+reach by shortcut helps the people who need it least.
 
 IPC, for keybindings:
 
@@ -217,6 +231,24 @@ node --test tests/model.test.js
 visibly wrong — timezone handling on all-day due dates, streak counting
 across a day that is still open, overdue sorting — so it is plain JS with no
 QML imports and runs under node.
+
+## Colours
+
+TickTick stores a colour for **tags** and for **projects**, and this shows the
+tag colour as a dot beside the task title. That is the only colour in a task's
+data — there is no colour field on a task itself.
+
+Overdue, today, and upcoming have **no colour in the API**. Every TickTick
+client paints that itself, so this one paints it from your Omarchy theme
+rather than hardcoding their palette: overdue takes the accent colour, today
+takes normal foreground, anything further out is muted. A fixed red would
+fight every theme you switch to.
+
+Priority is the same story — the API gives an integer, not a colour — so a
+high-priority task is shown in bold rather than in TickTick's red.
+
+Note that dots only appear on tasks that are both tagged **and** dated, since
+the panel lists dated tasks.
 
 ## Undo, and why it is a delay
 

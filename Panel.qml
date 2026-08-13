@@ -91,6 +91,60 @@ Panel {
   readonly property int hiddenTaskCount: Math.max(0, visibleTasks.length - listedTasks.length)
   readonly property int overdueCount: Model.overdueCount(visibleTasks, nowDate)
 
+  // Tag colours are the only colours TickTick actually stores for a task,
+  // so they are the only ones taken literally. Due state is painted from the
+  // theme instead — a hardcoded red would fight every Omarchy theme.
+  readonly property var tagsById: Model.tagIndex(cache.tags)
+
+  // ---- keyboard cursor. Same idiom as the first-party panels: the cursor
+  //      only becomes visible once a key is pressed, and mouse hover keeps
+  //      it in sync so the two input modes never disagree about "current".
+  property bool cursorActive: false
+  property int cursor: -1
+  property bool helpVisible: false
+
+  readonly property var navRows: {
+    var rows = []
+    if (showTasks) {
+      for (var i = 0; i < listedTasks.length; i++) rows.push({ section: "task", index: i })
+    }
+    if (showHabits) {
+      for (var j = 0; j < habits.length; j++) rows.push({ section: "habit", index: j })
+    }
+    return rows
+  }
+
+  function moveCursor(delta) {
+    cursorActive = true
+    var count = navRows.length
+    if (count === 0) { cursor = -1; return }
+    if (cursor < 0) cursor = delta > 0 ? 0 : count - 1
+    else cursor = Math.max(0, Math.min(count - 1, cursor + delta))
+  }
+
+  function syncCursorTo(section, index) {
+    for (var i = 0; i < navRows.length; i++) {
+      if (navRows[i].section === section && navRows[i].index === index) { cursor = i; return }
+    }
+  }
+
+  function activateCursor() {
+    if (cursor < 0 || cursor >= navRows.length) return
+    var row = navRows[cursor]
+    if (row.section === "task") completeTask(listedTasks[row.index])
+    else checkInHabit(habits[row.index])
+  }
+
+  function isCursorOn(section, index) {
+    if (!cursorActive || cursor < 0 || cursor >= navRows.length) return false
+    var row = navRows[cursor]
+    return row.section === section && row.index === index
+  }
+
+  // The list shrinks as things get completed; a cursor left past the end
+  // would silently act on the wrong row next time.
+  onNavRowsChanged: if (cursor >= navRows.length) cursor = navRows.length - 1
+
   readonly property var habits: showHabits ? (cache.habits || []) : []
   readonly property int habitsRemaining: Model.habitsRemaining(habits, cache.checkins, todayStamp)
 
@@ -421,12 +475,32 @@ Panel {
       id: keyCatcher
       anchors.fill: parent
       blocked: quickAdd.activeFocus
-      onCloseRequested: root.close()
-      onReturnRequested: quickAdd.forceActiveFocus()
+      // Escape backs out one layer at a time — help, then a held action,
+      // then the panel itself.
+      onCloseRequested: {
+        if (root.helpVisible) root.helpVisible = false
+        else if (root.pendingAction) root.cancelPending()
+        else root.close()
+      }
+      onMoveRequested: function(dx, dy) {
+        if (dy !== 0) root.moveCursor(dy > 0 ? 1 : -1)
+      }
+      onActivateRequested: root.activateCursor()
+      onReturnRequested: root.activateCursor()
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(text) {
-        if (text === "r") root.refresh()
+        if (text === "?") root.helpVisible = !root.helpVisible
+        else if (text === "r") root.refresh()
         else if (text === "a") quickAdd.forceActiveFocus()
+        else if (text === "u") root.cancelPending()
+        else if (text === "p") {
+          if (root.pomoRunning) root.pausePomo()
+          else if (root.pomoPaused) root.resumePomo()
+          else root.startPomo("focus")
+        }
+        else if (text === "s") root.stopPomo()
+        else if (text === "g") root.moveCursor(-root.navRows.length)
+        else if (text === "G") root.moveCursor(root.navRows.length)
       }
 
       Flickable {
@@ -473,6 +547,17 @@ Panel {
             }
 
             PanelActionButton {
+              id: helpButton
+              anchors.right: syncButton.left
+              anchors.rightMargin: Style.space(2)
+              anchors.verticalCenter: parent.verticalCenter
+              iconText: ""
+              tooltipText: "Keyboard shortcuts  (?)"
+              foreground: root.helpVisible ? Color.accent : root.muted
+              onClicked: root.helpVisible = !root.helpVisible
+            }
+
+            PanelActionButton {
               id: syncButton
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
@@ -480,6 +565,58 @@ Panel {
               tooltipText: syncProc.running ? "Syncing…" : "Sync now"
               foreground: root.fg
               onClicked: root.refresh()
+            }
+          }
+
+          // ---- keyboard help. Reachable two ways on purpose: `?` for the
+          //      keyboard, the header button for the mouse. A shortcut list
+          //      only findable by shortcut helps whoever needs it least.
+          Column {
+            width: parent.width
+            spacing: Style.space(3)
+            visible: root.helpVisible
+
+            PanelSeparator { width: parent.width; foreground: root.fg }
+
+            PanelSectionHeader { text: "KEYS"; foreground: root.fg }
+
+            Repeater {
+              model: [
+                { key: "\u2191 \u2193", what: "move between tasks and habits" },
+                { key: "enter", what: "complete task / check habit in" },
+                { key: "u", what: "undo the held action" },
+                { key: "a", what: "add a task" },
+                { key: "r", what: "sync now" },
+                { key: "p", what: "start or pause focus" },
+                { key: "s", what: "discard the focus block" },
+                { key: "g / G", what: "first / last row" },
+                { key: "tab", what: "next bar panel" },
+                { key: "?", what: "show or hide this list" },
+                { key: "esc", what: "back out, then close" }
+              ]
+
+              Row {
+                required property var modelData
+                width: content.width
+                spacing: Style.space(8)
+
+                Text {
+                  width: Style.space(52)
+                  horizontalAlignment: Text.AlignRight
+                  text: modelData.key
+                  color: Color.accent
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                }
+
+                Text {
+                  text: modelData.what
+                  color: root.muted
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                }
+              }
             }
           }
 
@@ -644,13 +781,18 @@ Panel {
               Rectangle {
                 id: taskRow
                 required property var modelData
+                required property int index
+                readonly property bool selected: root.isCursorOn("task", index)
                 readonly property bool late: Model.isOverdue(modelData, root.nowDate)
+                readonly property string tier: Model.dueTier(modelData, root.nowDate)
+                readonly property string tagHex: Model.tagColor(modelData, root.tagsById)
+                readonly property string tagName: Model.tagLabel(modelData, root.tagsById)
 
                 width: content.width
                 height: Style.space(26)
                 radius: Style.space(4)
-                color: taskHover.containsMouse
-                  ? Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.08)
+                color: (taskHover.containsMouse || taskRow.selected)
+                  ? Qt.rgba(root.fg.r, root.fg.g, root.fg.b, taskRow.selected ? 0.14 : 0.08)
                   : "transparent"
 
                 // Row-wide hover for the highlight only. It deliberately
@@ -661,6 +803,12 @@ Panel {
                   anchors.fill: parent
                   hoverEnabled: true
                   acceptedButtons: Qt.NoButton
+                  // Hover takes the cursor so keyboard and mouse never
+                  // disagree about which row is current.
+                  onContainsMouseChanged: if (containsMouse) {
+                    root.cursorActive = false
+                    root.syncCursorTo("task", taskRow.index)
+                  }
                 }
 
                 Row {
@@ -693,12 +841,37 @@ Panel {
                     }
                   }
 
+                  // The task's own tag colour, straight from TickTick.
+                  Rectangle {
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: taskRow.tagHex !== ""
+                    width: Style.space(6)
+                    height: Style.space(6)
+                    radius: width / 2
+                    color: taskRow.tagHex === "" ? "transparent" : taskRow.tagHex
+
+                    PanelToolTip {
+                      text: taskRow.tagName
+                      visible: tagHover.containsMouse && taskRow.tagName !== ""
+                    }
+
+                    MouseArea {
+                      id: tagHover
+                      anchors.fill: parent
+                      hoverEnabled: true
+                    }
+                  }
+
                   Text {
                     anchors.verticalCenter: parent.verticalCenter
-                    width: parent.width - Style.space(30) - dueLabel.implicitWidth
+                    width: parent.width - Style.space(30)
+                      - (taskRow.tagHex !== "" ? Style.space(14) : 0)
+                      - dueLabel.implicitWidth
                     elide: Text.ElideRight
                     text: String(taskRow.modelData.title || "")
-                    color: root.fg
+                    // Three tiers, not two: overdue shouts, today is normal
+                    // weight, anything further out recedes.
+                    color: taskRow.tier === "upcoming" ? root.muted : root.fg
                     font.family: Style.font.family
                     font.pixelSize: Style.font.bodySmall
                     font.bold: Model.priorityRank(taskRow.modelData) === "high"
@@ -708,7 +881,9 @@ Panel {
                     id: dueLabel
                     anchors.verticalCenter: parent.verticalCenter
                     text: Model.dueLabel(taskRow.modelData, root.nowDate)
-                    color: taskRow.late ? Color.accent : root.muted
+                    color: taskRow.tier === "overdue"
+                      ? Color.accent
+                      : (taskRow.tier === "today" ? root.fg : root.muted)
                     font.family: Style.font.family
                     font.pixelSize: Style.font.caption
                   }
@@ -745,6 +920,8 @@ Panel {
               Rectangle {
                 id: habitRow
                 required property var modelData
+                required property int index
+                readonly property bool selected: root.isCursorOn("habit", index)
                 readonly property var rawProgress: Model.habitProgress(modelData, root.cache.checkins, root.todayStamp)
                 // A held check-in shows as done immediately; undo puts it back.
                 readonly property var progress: root.pendingHabitIds[String(modelData.id)]
@@ -755,8 +932,8 @@ Panel {
                 width: content.width
                 height: Style.space(26)
                 radius: Style.space(4)
-                color: habitHover.containsMouse
-                  ? Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.08)
+                color: (habitHover.containsMouse || habitRow.selected)
+                  ? Qt.rgba(root.fg.r, root.fg.g, root.fg.b, habitRow.selected ? 0.14 : 0.08)
                   : "transparent"
 
                 // Parity with tasks: the row highlights, the circle acts.
@@ -767,6 +944,10 @@ Panel {
                   anchors.fill: parent
                   hoverEnabled: true
                   acceptedButtons: Qt.NoButton
+                  onContainsMouseChanged: if (containsMouse) {
+                    root.cursorActive = false
+                    root.syncCursorTo("habit", habitRow.index)
+                  }
                 }
 
                 Row {

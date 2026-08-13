@@ -177,6 +177,51 @@ function projectName(projects, projectId, inboxId) {
   return ""
 }
 
+// ---- tags --------------------------------------------------------------
+
+// Tasks reference tags by their lowercase `name`; the colour lives on the
+// tag object. A task can carry several, and the first one in TickTick's own
+// order is the one its apps lead with, so that is the dot we paint.
+function tagIndex(tags) {
+  var index = {}
+  for (var i = 0; i < (tags || []).length; i++) {
+    var tag = tags[i]
+    if (tag && tag.name) index[String(tag.name)] = tag
+  }
+  return index
+}
+
+function firstTag(task, index) {
+  var names = (task && task.tags) || []
+  for (var i = 0; i < names.length; i++) {
+    var tag = index[String(names[i])]
+    if (tag) return tag
+  }
+  return null
+}
+
+function tagColor(task, index) {
+  var tag = firstTag(task, index)
+  return tag && tag.color ? String(tag.color) : ""
+}
+
+function tagLabel(task, index) {
+  var tag = firstTag(task, index)
+  return tag ? String(tag.label || tag.name || "") : ""
+}
+
+// ---- due tiers ---------------------------------------------------------
+
+// TickTick has no colour for "overdue" or "today" — every client paints that
+// itself. Returning a tier instead of a colour keeps the decision in the
+// panel, where the theme's palette lives.
+function dueTier(task, now) {
+  if (isOverdue(task, now)) return "overdue"
+  var due = taskDueDate(task)
+  if (!due) return "upcoming"
+  return dateStamp(due) === dateStamp(now || new Date()) ? "today" : "upcoming"
+}
+
 // ---- habits ------------------------------------------------------------
 
 function checkinFor(checkins, habitId, stamp) {
@@ -367,6 +412,7 @@ function parseCache(text) {
     habits: [],
     checkins: {},
     todayStamp: 0,
+    tags: [],
     pomoStats: {},
     pomoPrefs: {},
     authRequired: false,
@@ -384,6 +430,7 @@ function parseCache(text) {
       habits: parsed.habits || [],
       checkins: parsed.checkins || {},
       todayStamp: Number(parsed.todayStamp || 0),
+      tags: parsed.tags || [],
       pomoStats: parsed.pomoStats || {},
       pomoPrefs: parsed.pomoPrefs || {},
       authRequired: !!parsed.authRequired,
@@ -417,6 +464,11 @@ if (typeof module !== "undefined") {
     nextTask: nextTask,
     dueLabel: dueLabel,
     priorityRank: priorityRank,
+    tagIndex: tagIndex,
+    firstTag: firstTag,
+    tagColor: tagColor,
+    tagLabel: tagLabel,
+    dueTier: dueTier,
     projectName: projectName,
     checkinFor: checkinFor,
     habitProgress: habitProgress,

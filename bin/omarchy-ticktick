@@ -445,6 +445,10 @@ def fetch_state(session: dict) -> dict:
 
     tasks = (batch.get("syncTaskBean") or {}).get("update") or []
     projects = batch.get("projectProfiles") or []
+    # Tags are the one place TickTick actually stores a colour the user
+    # picked. Tasks reference them by `name`, the lowercase key; `label` is
+    # what gets shown.
+    tags = batch.get("tags") or []
     inbox_id = batch.get("inboxId", "")
 
     habits = request("GET", "/habits", session)
@@ -486,6 +490,11 @@ def fetch_state(session: dict) -> dict:
         "inboxId": inbox_id,
         "pomoStats": pomo_stats,
         "pomoPrefs": pomo_prefs,
+        "tags": [
+            {"name": t.get("name"), "label": t.get("label"), "color": t.get("color")}
+            for t in tags
+            if isinstance(t, dict) and t.get("name")
+        ],
         "projects": [
             {
                 "id": p.get("id"),

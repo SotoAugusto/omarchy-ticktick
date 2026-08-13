@@ -350,3 +350,58 @@ test('overridden durations flow through to phase seconds and cycle', () => {
   assert.equal(Model.pomoPhaseAfter(2, merged), 'longBreak')
   assert.equal(Model.pomoPhaseAfter(1, merged), 'shortBreak')
 })
+
+// --- tags and due tiers --------------------------------------------------
+
+const TAGS = [
+  { name: 'book', label: 'Book', color: '#52B8D2' },
+  { name: 'goal', label: 'GOAL', color: '#9842EB' },
+  { name: 'nocolor', label: 'NoColor', color: null }
+]
+const IDX = Model.tagIndex(TAGS)
+
+test('tagIndex keys on the lowercase name that tasks reference', () => {
+  assert.equal(IDX['book'].label, 'Book')
+  assert.equal(IDX['Book'], undefined)
+})
+
+test('a task takes the colour of its first resolvable tag', () => {
+  assert.equal(Model.tagColor(task({ tags: ['book'] }), IDX), '#52B8D2')
+  assert.equal(Model.tagLabel(task({ tags: ['book'] }), IDX), 'Book')
+})
+
+test('an unknown tag is skipped in favour of a known one', () => {
+  assert.equal(Model.tagColor(task({ tags: ['ghost', 'goal'] }), IDX), '#9842EB')
+})
+
+test('untagged, unknown-only, and colourless tags yield no colour', () => {
+  assert.equal(Model.tagColor(task({}), IDX), '')
+  assert.equal(Model.tagColor(task({ tags: [] }), IDX), '')
+  assert.equal(Model.tagColor(task({ tags: ['ghost'] }), IDX), '')
+  assert.equal(Model.tagColor(task({ tags: ['nocolor'] }), IDX), '')
+})
+
+test('tagIndex tolerates junk', () => {
+  assert.deepEqual(Model.tagIndex(null), {})
+  assert.deepEqual(Model.tagIndex([null, {}, { name: 'a' }]), { a: { name: 'a' } })
+})
+
+test('dueTier separates overdue, today, and upcoming', () => {
+  assert.equal(Model.dueTier(task({ dueDate: '2026-08-09T00:00:00.000+0000' }), NOW), 'overdue')
+  assert.equal(Model.dueTier(task({ dueDate: '2026-08-12T00:00:00.000+0000' }), NOW), 'today')
+  assert.equal(Model.dueTier(task({ dueDate: '2026-08-20T00:00:00.000+0000' }), NOW), 'upcoming')
+})
+
+test('an undated task is not treated as due today', () => {
+  assert.equal(Model.dueTier(task({}), NOW), 'upcoming')
+})
+
+test('a timed task earlier today is overdue, not today', () => {
+  assert.equal(
+    Model.dueTier(task({ isAllDay: false, dueDate: '2026-08-12T09:00:00.000-0500' }), NOW),
+    'overdue')
+})
+
+test('parseCache defaults tags to an empty list', () => {
+  assert.deepEqual(Model.parseCache('').tags, [])
+})
