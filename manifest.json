@@ -1,0 +1,158 @@
+{
+  "schemaVersion": 1,
+  "id": "colocho.ticktick",
+  "name": "TickTick",
+  "version": "0.1.0",
+  "author": "colocho",
+  "description": "Today's TickTick tasks and habits in the bar, with one-click complete and check-in",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "TickTick",
+    "description": "Tasks due today and habit check-ins, from the bar",
+    "category": "Info",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 300,
+      "showTasks": true,
+      "showHabits": true,
+      "includeOverdue": true,
+      "horizon": "Today",
+      "maxTasks": 12,
+      "barLabel": "Count",
+      "undoSeconds": 6,
+      "showPomo": true,
+      "pomoMinutes": 0,
+      "shortBreakMinutes": 0,
+      "longBreakMinutes": 0,
+      "longBreakInterval": 0
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "description": "How often the background sync runs. TickTick throttles aggressively, so short intervals buy nothing.",
+        "min": 60,
+        "max": 3600,
+        "step": 30,
+        "defaultValue": 300
+      },
+      {
+        "key": "horizon",
+        "type": "enum",
+        "label": "Task horizon",
+        "description": "Which due dates count as \"up next\" in the panel and the bar count.",
+        "options": [
+          "Today",
+          "Tomorrow",
+          "Next 7 days"
+        ],
+        "defaultValue": "Today"
+      },
+      {
+        "key": "includeOverdue",
+        "type": "boolean",
+        "label": "Include overdue",
+        "description": "Count and list tasks whose due date has already passed.",
+        "defaultValue": true
+      },
+      {
+        "key": "showTasks",
+        "type": "boolean",
+        "label": "Show tasks",
+        "defaultValue": true
+      },
+      {
+        "key": "showHabits",
+        "type": "boolean",
+        "label": "Show habits",
+        "defaultValue": true
+      },
+      {
+        "key": "maxTasks",
+        "type": "integer",
+        "label": "Max tasks listed",
+        "description": "The panel scrolls past this; the cap keeps a 200-task day from becoming a 200-row popup.",
+        "min": 3,
+        "max": 50,
+        "step": 1,
+        "defaultValue": 12
+      },
+      {
+        "key": "barLabel",
+        "type": "enum",
+        "label": "Bar label",
+        "description": "Count shows the number due, Next shows the next task's title, Icon shows nothing but the glyph.",
+        "options": [
+          "Count",
+          "Next",
+          "Icon"
+        ],
+        "defaultValue": "Count"
+      },
+      {
+        "key": "showPomo",
+        "type": "boolean",
+        "label": "Show focus timer",
+        "description": "Pomodoro section in the panel, and a live countdown in the bar while a block runs.",
+        "defaultValue": true
+      },
+      {
+        "key": "undoSeconds",
+        "type": "integer",
+        "label": "Undo window (seconds)",
+        "description": "How long a completion or check-in is held before it is sent. 0 sends immediately with no undo.",
+        "min": 0,
+        "max": 30,
+        "step": 1,
+        "defaultValue": 6
+      },
+      {
+        "key": "pomoMinutes",
+        "type": "integer",
+        "label": "Focus length (minutes)",
+        "description": "0 follows your TickTick account setting.",
+        "min": 0,
+        "max": 180,
+        "step": 5,
+        "defaultValue": 0
+      },
+      {
+        "key": "shortBreakMinutes",
+        "type": "integer",
+        "label": "Short break (minutes)",
+        "description": "0 follows your TickTick account setting.",
+        "min": 0,
+        "max": 60,
+        "step": 1,
+        "defaultValue": 0
+      },
+      {
+        "key": "longBreakMinutes",
+        "type": "integer",
+        "label": "Long break (minutes)",
+        "description": "0 follows your TickTick account setting.",
+        "min": 0,
+        "max": 120,
+        "step": 5,
+        "defaultValue": 0
+      },
+      {
+        "key": "longBreakInterval",
+        "type": "integer",
+        "label": "Long break every N blocks",
+        "description": "0 follows your TickTick account setting.",
+        "min": 0,
+        "max": 12,
+        "step": 1,
+        "defaultValue": 0
+      }
+    ]
+  }
+}

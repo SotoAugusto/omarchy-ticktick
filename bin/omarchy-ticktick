@@ -1,0 +1,981 @@
+#!/usr/bin/env python3
+"""TickTick v2 client for the Omarchy shell plugin.
+
+Why a CLI and not XMLHttpRequest inside QML: the session token is a
+long-lived credential that has to live in a 0600 file rather than in the
+shell's process state, TickTick hands it over as a Set-Cookie on a login
+endpoint that answers 429 to anything eager, and the write paths are
+read-modify-write against the full task object. All three are miserable in
+QML and ordinary in Python. The shell only ever runs this and parses JSON.
+
+Endpoints are TickTick's *unofficial* v2 API — the same one the web app
+uses. The documented Open API v1 has no habits at all, which is why this
+plugin does not use it. It can break without notice.
+
+Commands:
+  login [--email ADDR]          authenticate, store the session token
+  logout                        forget the token (and any stored password)
+  sync                          refresh the on-disk cache the panel reads
+  complete TASK_ID              mark a task done
+  reopen TASK_ID                mark a done task not-done again
+  add TITLE [--due] [--project] create a task
+  checkin HABIT [--value N]     check a habit in for a day
+  status                        print the cache summary as JSON
+"""
+
+from __future__ import annotations
+
+import argparse
+import getpass
+import json
+import os
+import shutil
+import ssl
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timedelta, timezone
+
+DOMAIN = os.environ.get("TICKTICK_DOMAIN", "ticktick.com")
+API = f"https://api.{DOMAIN}/api/v2"
+
+STATE_DIR = os.path.join(
+    os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")),
+    "omarchy",
+    "ticktick",
+)
+TOKEN_PATH = os.path.join(STATE_DIR, "session.json")
+DATA_PATH = os.path.join(STATE_DIR, "data.json")
+
+USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
+)
+
+# TickTick rejects requests without an x-device header. The id has to stay
+# stable across runs or every sync reads as a new device and trips the
+# login throttle sooner.
+DEVICE_VERSION = 6070
+
+STATUS_TODO = 0
+STATUS_WONT_DO = -1
+STATUS_DONE = 2
+
+CHECKIN_UNCHECKED = 0
+CHECKIN_FAILED = 1
+CHECKIN_DONE = 2
+
+
+class TickTickError(RuntimeError):
+    """Anything that should reach the user as a message rather than a stack."""
+
+    def __init__(self, message: str, auth_required: bool = False, status: int | None = None):
+        super().__init__(message)
+        self.auth_required = auth_required
+        self.status = status
+
+
+# v2 reports failures in-band as often as by status code, and it picks the
+# status code carelessly — bad credentials come back as a 500 carrying a
+# perfectly clear errorCode. So the body is what gets trusted, not the code.
+AUTH_ERROR_CODES = {
+    "user_not_sign_on",
+    "not_authenticate",
+    "auth_error",
+    "token_expired",
+}
+
+FRIENDLY_ERRORS = {
+    "username_password_not_match": "TickTick rejected that email and password.",
+    "user_not_exist": "TickTick has no account for that email.",
+    "need_captcha": (
+        "TickTick wants a captcha before it will accept this login. "
+        "Sign in once at https://ticktick.com/signin, then retry."
+    ),
+    "captcha_error": (
+        "TickTick wants a captcha before it will accept this login. "
+        "Sign in once at https://ticktick.com/signin, then retry."
+    ),
+    "too_many_login_attempts": "Too many login attempts. Wait a few minutes.",
+}
+
+
+def raise_for_payload(payload: dict, path: str) -> None:
+    """Turn a v2 error body into a TickTickError, or return quietly."""
+    code = str(payload.get("errorCode") or "")
+    if not code and "errorId" not in payload:
+        return
+
+    if code in AUTH_ERROR_CODES:
+        raise TickTickError(
+            "TickTick rejected the stored session. Run: omarchy-ticktick login",
+            auth_required=True,
+        )
+    if code in FRIENDLY_ERRORS:
+        raise TickTickError(FRIENDLY_ERRORS[code])
+
+    detail = payload.get("errorMessage") or code or str(payload)
+    raise TickTickError(f"TickTick error on {path}: {detail}")
+
+
+# --------------------------------------------------------------------------
+# state files
+
+
+def _ensure_state_dir() -> None:
+    os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
+
+
+def _write_private(path: str, payload: dict) -> None:
+    """Write JSON atomically at 0600, so a killed run never leaves a torn file.
+
+    The temp name carries the pid because a bar surface exists per monitor,
+    so two panels can sync at the same instant. Sharing one `.tmp` means one
+    writer's rename can pull the file out from under the other's write.
+    """
+    _ensure_state_dir()
+    tmp = f"{path}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, separators=(",", ":"))
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    finally:
+        # A crash between open and replace would otherwise leave pid-suffixed
+        # litter in the state dir forever.
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
+def _read_json(path: str) -> dict:
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return {}
+
+
+def load_session() -> dict:
+    return _read_json(TOKEN_PATH)
+
+
+def device_id(session: dict) -> str:
+    stored = session.get("deviceId")
+    if isinstance(stored, str) and len(stored) == 24:
+        return stored
+    return os.urandom(12).hex()
+
+
+def object_id() -> str:
+    """TickTick ids are Mongo ObjectIds and v2 batch/add wants a client-made one."""
+    return os.urandom(12).hex()
+
+
+# --------------------------------------------------------------------------
+# password storage (opt-in, keyring only)
+
+
+KEYRING_SERVICE = "omarchy-ticktick"
+
+
+def _secret_tool() -> str | None:
+    return shutil.which("secret-tool")
+
+
+def store_password(email: str, password: str) -> bool:
+    tool = _secret_tool()
+    if not tool:
+        return False
+    result = subprocess.run(
+        [tool, "store", "--label=Omarchy TickTick", "service", KEYRING_SERVICE, "account", email],
+        input=password,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def lookup_password(email: str) -> str | None:
+    tool = _secret_tool()
+    if not tool or not email:
+        return None
+    result = subprocess.run(
+        [tool, "lookup", "service", KEYRING_SERVICE, "account", email],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def clear_password(email: str) -> None:
+    tool = _secret_tool()
+    if not tool or not email:
+        return
+    subprocess.run(
+        [tool, "clear", "service", KEYRING_SERVICE, "account", email],
+        capture_output=True,
+        check=False,
+    )
+
+
+# --------------------------------------------------------------------------
+# http
+
+
+def _headers(session: dict, with_token: bool = True) -> dict:
+    # Kept deliberately minimal. A fuller field set copied from TickTick's own
+    # web bundle, and any Origin/Referer pair, both make the edge answer
+    # access_forbidden — it blocks requests that claim to be the web app
+    # without being it. This short form is the one that reaches the actual
+    # credential check.
+    device = {
+        "platform": "web",
+        "os": "Linux",
+        "device": "Firefox 128.0",
+        "name": "",
+        "version": DEVICE_VERSION,
+        "id": device_id(session),
+        "channel": "website",
+        "campaign": "",
+        "websocket": "",
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": USER_AGENT,
+        "x-device": json.dumps(device, separators=(",", ":")),
+        "Accept": "application/json",
+        # No Origin/Referer on purpose. Sending them makes TickTick's edge
+        # answer access_forbidden — it treats a browser-claiming request that
+        # is not actually a browser as forged. Measured, not guessed.
+    }
+    token = session.get("token")
+    if with_token and token:
+        headers["Cookie"] = f"t={token}"
+    return headers
+
+
+def request(
+    method: str,
+    path: str,
+    session: dict,
+    payload: dict | None = None,
+    params: dict | None = None,
+    with_token: bool = True,
+    timeout: int = 20,
+) -> dict | list:
+    url = f"{API}{path}"
+    if params:
+        url = f"{url}?{urllib.parse.urlencode(params)}"
+
+    body = None if payload is None else json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=body, method=method, headers=_headers(session, with_token))
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=ssl.create_default_context()) as response:
+            raw = response.read().decode("utf-8").strip()
+    except urllib.error.HTTPError as error:
+        body = ""
+        try:
+            body = error.read().decode("utf-8", "replace").strip()
+        except Exception:  # noqa: BLE001 - the status matters, not the read failure
+            pass
+
+        # The body outranks the status code here: a wrong password arrives as
+        # a 500 with errorCode username_password_not_match, and reporting that
+        # as "HTTP 500" would send the user hunting a server outage.
+        try:
+            parsed_error = json.loads(body)
+        except ValueError:
+            parsed_error = None
+        if isinstance(parsed_error, dict):
+            raise_for_payload(parsed_error, path)
+
+        if error.code in (401, 403):
+            raise TickTickError(
+                "TickTick rejected the stored session. Run: omarchy-ticktick login",
+                auth_required=True,
+                status=error.code,
+            ) from error
+        if error.code == 429:
+            raise TickTickError(
+                "TickTick is rate limiting this account. Wait a few minutes.",
+                status=429,
+            ) from error
+        if error.code == 404:
+            raise TickTickError(
+                f"TickTick has no endpoint at {path} — the v2 API moved. "
+                "This plugin needs updating.",
+                status=404,
+            ) from error
+        raise TickTickError(f"HTTP {error.code} from {path}: {body[:200]}", status=error.code) from error
+    except urllib.error.URLError as error:
+        raise TickTickError(f"Network error talking to TickTick: {error.reason}") from error
+
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except ValueError as error:
+        raise TickTickError(f"Malformed JSON from {path}") from error
+
+    # v2 signals failures in-band with a 200 as often as with a status code.
+    if isinstance(parsed, dict):
+        raise_for_payload(parsed, path)
+
+    return parsed
+
+
+# --------------------------------------------------------------------------
+# auth
+
+
+def sign_in(email: str, password: str, session: dict) -> dict:
+    """Exchange credentials for a session token.
+
+    The path is `signon`, not `signin` — `signin` is a dead 404 that several
+    published wrappers still point at.
+
+    This endpoint is throttled hard — a 429 here is TickTick telling us to
+    stop, not a transient blip, so it is not retried in a loop.
+    """
+    response = request(
+        "POST",
+        "/user/signon",
+        session,
+        payload={"username": email, "password": password},
+        params={"wc": "true", "remember": "true"},
+        with_token=False,
+    )
+    token = response.get("token") if isinstance(response, dict) else None
+    if not token:
+        raise TickTickError("Login succeeded but returned no token")
+
+    return {
+        "token": token,
+        "userId": response.get("userId", ""),
+        "email": email,
+        "deviceId": device_id(session),
+        "savedAt": int(time.time() * 1000),
+    }
+
+
+def authed_session() -> dict:
+    session = load_session()
+    if not session.get("token"):
+        raise TickTickError(
+            "Not signed in to TickTick. Run: omarchy-ticktick login",
+            auth_required=True,
+        )
+    return session
+
+
+def with_reauth(call):
+    """Run an API call, re-logging in once if a stored password is available.
+
+    Tokens expire eventually. When the password is in the keyring the user
+    should never see that happen; when it isn't, the panel says so rather
+    than silently showing yesterday's tasks forever.
+    """
+    session = authed_session()
+    try:
+        return call(session), session
+    except TickTickError as error:
+        if not error.auth_required:
+            raise
+        password = lookup_password(session.get("email", ""))
+        if not password:
+            raise
+        session = sign_in(session["email"], password, session)
+        _write_private(TOKEN_PATH, session)
+        return call(session), session
+
+
+# --------------------------------------------------------------------------
+# time helpers
+
+
+def to_api_time(stamp: datetime) -> str:
+    """TickTick's wire format: UTC, milliseconds, numeric offset."""
+    stamp = stamp.astimezone(timezone.utc)
+    return stamp.strftime("%Y-%m-%dT%H:%M:%S.") + f"{stamp.microsecond // 1000:03d}+0000"
+
+
+def now_api_time() -> str:
+    return to_api_time(datetime.now(timezone.utc))
+
+
+def date_stamp(when: datetime | None = None) -> int:
+    """Habit check-ins are keyed by a local YYYYMMDD integer, not a timestamp."""
+    return int((when or datetime.now()).strftime("%Y%m%d"))
+
+
+def parse_api_time(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    # "2026-08-12T04:00:00.000+0000" — Python wants "+00:00".
+    if len(text) >= 5 and (text[-5] in "+-") and text[-3] != ":":
+        text = f"{text[:-2]}:{text[-2:]}"
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+# --------------------------------------------------------------------------
+# reads
+
+
+def fetch_state(session: dict) -> dict:
+    """One sync round: tasks, projects, habits, and this month's check-ins."""
+    batch = request("GET", "/batch/check/0", session)
+    if not isinstance(batch, dict):
+        raise TickTickError("Unexpected shape from batch/check/0")
+
+    tasks = (batch.get("syncTaskBean") or {}).get("update") or []
+    projects = batch.get("projectProfiles") or []
+    inbox_id = batch.get("inboxId", "")
+
+    habits = request("GET", "/habits", session)
+    if not isinstance(habits, list):
+        habits = []
+    active_habits = [h for h in habits if h.get("status", 0) == 0]
+
+    checkins: dict = {}
+    habit_ids = [h["id"] for h in active_habits if h.get("id")]
+    if habit_ids:
+        # 60 days back is enough to draw a streak without pulling a decade
+        # of history on every sync.
+        after = date_stamp(datetime.now() - timedelta(days=60))
+        response = request(
+            "POST",
+            "/habitCheckins/query",
+            session,
+            payload={"habitIds": habit_ids, "afterStamp": after},
+        )
+        if isinstance(response, dict):
+            checkins = response.get("checkins") or {}
+
+    # Pomodoro is best-effort: it is a secondary panel section, and losing it
+    # to a hiccup should not cost the caller their tasks and habits.
+    pomo_stats: dict = {}
+    pomo_prefs: dict = {}
+    try:
+        stats = request("GET", "/pomodoros/statistics/generalForDesktop", session)
+        if isinstance(stats, dict):
+            pomo_stats = stats
+        prefs = request("GET", "/user/preferences/pomodoro", session)
+        if isinstance(prefs, dict):
+            pomo_prefs = prefs
+    except TickTickError:
+        pass
+
+    return {
+        "syncedAt": int(time.time() * 1000),
+        "inboxId": inbox_id,
+        "pomoStats": pomo_stats,
+        "pomoPrefs": pomo_prefs,
+        "projects": [
+            {
+                "id": p.get("id"),
+                "name": p.get("name"),
+                "color": p.get("color"),
+                "closed": bool(p.get("closed")),
+            }
+            for p in projects
+            if isinstance(p, dict)
+        ],
+        "tasks": [t for t in tasks if isinstance(t, dict) and not t.get("deleted")],
+        "habits": active_habits,
+        "checkins": checkins,
+        "todayStamp": date_stamp(),
+        "authRequired": False,
+        "error": None,
+    }
+
+
+def write_cache(state: dict) -> None:
+    _write_private(DATA_PATH, state)
+
+
+def write_error_cache(message: str, auth_required: bool) -> None:
+    """Preserve the last good payload; only stamp the failure onto it.
+
+    A network blip should dim the panel, not blank it.
+    """
+    cache = _read_json(DATA_PATH)
+    cache["error"] = message
+    cache["authRequired"] = auth_required
+    cache["erroredAt"] = int(time.time() * 1000)
+    cache.setdefault("tasks", [])
+    cache.setdefault("habits", [])
+    cache.setdefault("projects", [])
+    cache.setdefault("checkins", {})
+    _write_private(DATA_PATH, cache)
+
+
+def cached_task(task_id: str) -> dict:
+    for task in _read_json(DATA_PATH).get("tasks", []):
+        if task.get("id") == task_id:
+            return task
+    raise TickTickError(f"Task {task_id} is not in the local cache; sync first")
+
+
+def find_task(task_id: str, session: dict) -> dict:
+    """Locate a task whether it is still open or already completed.
+
+    Reopen has to reach tasks the cache no longer holds — completing one is
+    exactly what removes it — so a miss falls back to the completed list.
+    Without this, undo is impossible for the action most in need of one.
+    """
+    try:
+        return cached_task(task_id)
+    except TickTickError:
+        pass
+
+    completed = request("GET", "/project/all/completed", session, params={"limit": 100})
+    for task in completed if isinstance(completed, list) else []:
+        if task.get("id") == task_id:
+            return task
+    raise TickTickError(f"Task {task_id} is in neither the cache nor recent completions")
+
+
+def resolve_habit(needle: str) -> dict:
+    habits = _read_json(DATA_PATH).get("habits", [])
+    for habit in habits:
+        if habit.get("id") == needle:
+            return habit
+    lowered = needle.strip().lower()
+    for habit in habits:
+        if str(habit.get("name", "")).strip().lower() == lowered:
+            return habit
+    raise TickTickError(f"No habit matching {needle!r} in the local cache")
+
+
+# --------------------------------------------------------------------------
+# writes
+
+
+def log_pomodoro(start: datetime, end: datetime, pause_seconds: int, pomo_type: int) -> dict:
+    """Upload a finished focus session.
+
+    TickTick's own timer runs client-side and only syncs completed sessions,
+    so this is the same thing its apps do: build the record locally and push
+    it. `tasks` mirrors the outer span — the app fills one entry per task
+    worked on, and a session with no task attached still needs the one span
+    or the entry does not show in the timeline.
+    """
+    entry = {
+        "id": object_id(),
+        "startTime": to_api_time(start),
+        "endTime": to_api_time(end),
+        "status": 1,
+        "pauseDuration": max(0, int(pause_seconds)),
+        "type": pomo_type,
+        "tasks": [{"startTime": to_api_time(start), "endTime": to_api_time(end)}],
+    }
+
+    def call(session):
+        return request(
+            "POST",
+            "/batch/pomodoro",
+            session,
+            payload={"add": [entry], "update": [], "delete": []},
+        )
+
+    result, _ = with_reauth(call)
+    errors = (result or {}).get("id2error") or {}
+    if errors:
+        raise TickTickError(f"TickTick rejected the focus session: {errors}")
+    return entry
+
+
+def batch_task(session: dict, add=None, update=None, delete=None) -> dict:
+    payload = {"add": add or [], "update": update or [], "delete": delete or []}
+    result = request("POST", "/batch/task", session, payload=payload)
+    return result if isinstance(result, dict) else {}
+
+
+def set_task_status(task_id: str, status: int) -> dict:
+    """Complete or reopen, preserving every other field on the task.
+
+    v2 update is a whole-object write: send a trimmed task and the fields you
+    left out are cleared server-side. So the cached object is the base and
+    only status/completedTime move.
+    """
+    holder = {}
+
+    def call(session):
+        task = dict(find_task(task_id, session))
+        task["status"] = status
+        if status == STATUS_DONE:
+            task["completedTime"] = now_api_time()
+        else:
+            task.pop("completedTime", None)
+        task["modifiedTime"] = now_api_time()
+        holder["task"] = task
+        return batch_task(session, update=[task])
+
+    with_reauth(call)
+    return holder["task"]
+
+
+def create_task(title: str, project_id: str | None, due: str | None) -> dict:
+    cache = _read_json(DATA_PATH)
+    task = {
+        "id": object_id(),
+        "projectId": project_id or cache.get("inboxId") or "",
+        "title": title,
+        "status": STATUS_TODO,
+        "priority": 0,
+        "sortOrder": -int(time.time() * 1000),
+        "timeZone": local_timezone_name(),
+        "isAllDay": True,
+        "items": [],
+        "createdTime": now_api_time(),
+        "modifiedTime": now_api_time(),
+    }
+    if due:
+        parsed = parse_due_argument(due)
+        task["dueDate"] = parsed
+        task["startDate"] = parsed
+
+    def call(session):
+        return batch_task(session, add=[task])
+
+    with_reauth(call)
+    return task
+
+
+def local_timezone_name() -> str:
+    try:
+        with open("/etc/timezone", encoding="utf-8") as handle:
+            name = handle.read().strip()
+            if name:
+                return name
+    except OSError:
+        pass
+    link = "/etc/localtime"
+    if os.path.islink(link):
+        target = os.readlink(link)
+        if "zoneinfo/" in target:
+            return target.split("zoneinfo/", 1)[1]
+    return "UTC"
+
+
+def parse_due_argument(value: str) -> str:
+    text = value.strip().lower()
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    if text == "today":
+        target = today
+    elif text == "tomorrow":
+        target = today + timedelta(days=1)
+    else:
+        try:
+            target = datetime.strptime(value.strip(), "%Y-%m-%d")
+        except ValueError as error:
+            raise TickTickError("--due wants today, tomorrow, or YYYY-MM-DD") from error
+    # An all-day due date is stored as UTC midnight of the local day.
+    return target.strftime("%Y-%m-%dT00:00:00.000+0000")
+
+
+def query_checkin(session: dict, habit_id: str, stamp: int) -> dict | None:
+    after = date_stamp(datetime.strptime(str(stamp), "%Y%m%d") - timedelta(days=1))
+    response = request(
+        "POST",
+        "/habitCheckins/query",
+        session,
+        payload={"habitIds": [habit_id], "afterStamp": after},
+    )
+    entries = (response or {}).get("checkins", {}).get(habit_id, []) if isinstance(response, dict) else []
+    for entry in entries:
+        if entry.get("checkinStamp") == stamp:
+            return entry
+    return None
+
+
+def check_in(habit: dict, stamp: int, value: float | None, toggle: bool) -> dict:
+    habit_id = habit["id"]
+    goal = float(habit.get("goal") or 1)
+    step = float(habit.get("step") or goal or 1)
+
+    def call(session):
+        existing = query_checkin(session, habit_id, stamp)
+        current = float(existing.get("value") or 0) if existing else 0.0
+
+        if toggle and existing and float(existing.get("status") or 0) == CHECKIN_DONE:
+            new_value = 0.0
+        elif value is not None:
+            new_value = float(value)
+        elif habit.get("type") == "Real":
+            # A quantified habit advances by its own step, so repeat clicks
+            # walk 1/3, 2/3, 3/3 instead of jumping straight to complete.
+            new_value = min(current + step, goal) if current < goal else 0.0
+        else:
+            new_value = goal
+
+        entry = {
+            "habitId": habit_id,
+            "checkinStamp": stamp,
+            "checkinTime": now_api_time(),
+            "opTime": now_api_time(),
+            "goal": goal,
+            "value": new_value,
+            "status": CHECKIN_DONE if new_value >= goal else CHECKIN_UNCHECKED,
+        }
+
+        payload = {"add": [], "update": [], "delete": []}
+        if existing and existing.get("id"):
+            entry["id"] = existing["id"]
+            payload["update"].append(entry)
+        else:
+            payload["add"].append(entry)
+
+        request("POST", "/habitCheckins/batch", session, payload=payload)
+        return entry
+
+    entry, _ = with_reauth(call)
+    return entry
+
+
+# --------------------------------------------------------------------------
+# commands
+
+
+def cmd_login(args) -> int:
+    session = load_session()
+
+    # Token path. Preferred, and the only one that works on an account whose
+    # risk control has stopped trusting scripted password logins: the browser
+    # already holds a valid session, so lift its `t` cookie instead of asking
+    # TickTick to mint a second one. No password is involved at any point.
+    if args.token:
+        # `--token -` prompts instead, so a full-access credential never lands
+        # in shell history.
+        token = getpass.getpass("TickTick `t` cookie: ") if args.token == "-" else args.token
+        token = token.strip()
+        if token.startswith("t="):
+            token = token[2:].strip()
+        if not token:
+            raise TickTickError("--token was empty")
+
+        candidate = {
+            "token": token,
+            "userId": session.get("userId", ""),
+            "email": args.email or session.get("email", ""),
+            "deviceId": device_id(session),
+            "savedAt": int(time.time() * 1000),
+            "source": "browser-cookie",
+        }
+        # Prove it works before it replaces whatever is on disk.
+        state = fetch_state(candidate)
+        _write_private(TOKEN_PATH, candidate)
+        write_cache(state)
+        print(
+            f"Connected with a browser session token: "
+            f"{len(state['tasks'])} open tasks, {len(state['habits'])} habits."
+        )
+        return 0
+
+    email = args.email or session.get("email") or input("TickTick email: ").strip()
+    if not email:
+        raise TickTickError("An email address is required")
+
+    password = os.environ.get("TICKTICK_PASSWORD") or getpass.getpass("TickTick password: ")
+    if not password:
+        raise TickTickError("A password is required")
+
+    session = sign_in(email, password, session)
+    _write_private(TOKEN_PATH, session)
+
+    if args.save_password:
+        if store_password(email, password):
+            print("Password saved to the system keyring; the session will renew itself.")
+        else:
+            print(
+                "secret-tool is not installed, so the password was not saved. "
+                "Re-run login when the session expires.",
+                file=sys.stderr,
+            )
+
+    state = fetch_state(session)
+    write_cache(state)
+    print(
+        f"Signed in as {email}: {len(state['tasks'])} open tasks, {len(state['habits'])} habits."
+    )
+    return 0
+
+
+def cmd_logout(_args) -> int:
+    session = load_session()
+    clear_password(session.get("email", ""))
+    for path in (TOKEN_PATH, DATA_PATH):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    print("Signed out of TickTick.")
+    return 0
+
+
+def cmd_sync(_args) -> int:
+    try:
+        state, _ = with_reauth(fetch_state)
+    except TickTickError as error:
+        write_error_cache(str(error), error.auth_required)
+        raise
+    write_cache(state)
+    print(json.dumps({"ok": True, "tasks": len(state["tasks"]), "habits": len(state["habits"])}))
+    return 0
+
+
+def cmd_complete(args) -> int:
+    task = set_task_status(args.task_id, STATUS_DONE)
+    cmd_sync(args)
+    print(json.dumps({"ok": True, "completed": task["id"]}))
+    return 0
+
+
+def cmd_reopen(args) -> int:
+    task = set_task_status(args.task_id, STATUS_TODO)
+    cmd_sync(args)
+    print(json.dumps({"ok": True, "reopened": task["id"]}))
+    return 0
+
+
+def cmd_add(args) -> int:
+    task = create_task(args.title, args.project, args.due)
+    cmd_sync(args)
+    print(json.dumps({"ok": True, "id": task["id"], "title": task["title"]}))
+    return 0
+
+
+def cmd_checkin(args) -> int:
+    habit = resolve_habit(args.habit)
+    stamp = int(args.date) if args.date else date_stamp()
+    entry = check_in(habit, stamp, args.value, args.toggle)
+    cmd_sync(args)
+    print(json.dumps({"ok": True, "habit": habit.get("name"), "value": entry["value"], "status": entry["status"]}))
+    return 0
+
+
+def cmd_pomo(args) -> int:
+    if args.pomo_command == "status":
+        cache = _read_json(DATA_PATH)
+        print(json.dumps({"stats": cache.get("pomoStats", {}), "prefs": cache.get("pomoPrefs", {})}))
+        return 0
+
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(minutes=float(args.minutes))
+    entry = log_pomodoro(start, end, args.pause_seconds, args.type)
+    cmd_sync(args)
+    print(json.dumps({"ok": True, "id": entry["id"], "minutes": float(args.minutes)}))
+    return 0
+
+
+def cmd_status(_args) -> int:
+    cache = _read_json(DATA_PATH)
+    print(
+        json.dumps(
+            {
+                "signedIn": bool(load_session().get("token")),
+                "syncedAt": cache.get("syncedAt"),
+                "tasks": len(cache.get("tasks", [])),
+                "habits": len(cache.get("habits", [])),
+                "error": cache.get("error"),
+                "authRequired": bool(cache.get("authRequired")),
+                "dataPath": DATA_PATH,
+            }
+        )
+    )
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="omarchy-ticktick", description=__doc__.split("\n")[0])
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    login = sub.add_parser("login", help="authenticate and store a session token")
+    login.add_argument("--email")
+    login.add_argument(
+        "--token",
+        help="session token lifted from the browser's `t` cookie; skips the password login entirely",
+    )
+    login.add_argument(
+        "--save-password",
+        action="store_true",
+        help="store the password in the system keyring so the session renews itself",
+    )
+    login.set_defaults(func=cmd_login)
+
+    sub.add_parser("logout", help="forget the token and cache").set_defaults(func=cmd_logout)
+    sub.add_parser("sync", help="refresh the cache the panel reads").set_defaults(func=cmd_sync)
+    sub.add_parser("status", help="print cache state as JSON").set_defaults(func=cmd_status)
+
+    complete = sub.add_parser("complete", help="mark a task done")
+    complete.add_argument("task_id")
+    complete.set_defaults(func=cmd_complete)
+
+    reopen = sub.add_parser("reopen", help="mark a done task not-done")
+    reopen.add_argument("task_id")
+    reopen.set_defaults(func=cmd_reopen)
+
+    add = sub.add_parser("add", help="create a task")
+    add.add_argument("title")
+    add.add_argument("--project", help="project id; defaults to the inbox")
+    add.add_argument("--due", help="today, tomorrow, or YYYY-MM-DD")
+    add.set_defaults(func=cmd_add)
+
+    checkin = sub.add_parser("checkin", help="check a habit in")
+    checkin.add_argument("habit", help="habit id or exact name")
+    checkin.add_argument("--value", type=float, help="explicit value for quantified habits")
+    checkin.add_argument("--date", help="YYYYMMDD; defaults to today")
+    checkin.add_argument(
+        "--toggle",
+        action="store_true",
+        help="clear the check-in when the day is already complete",
+    )
+    checkin.set_defaults(func=cmd_checkin)
+
+    pomo = sub.add_parser("pomo", help="focus sessions")
+    pomo_sub = pomo.add_subparsers(dest="pomo_command", required=True)
+    pomo_sub.add_parser("status", help="today's focus stats and settings, from the cache")
+    pomo_log = pomo_sub.add_parser("log", help="upload a finished focus session")
+    pomo_log.add_argument("--minutes", type=float, required=True)
+    pomo_log.add_argument("--pause-seconds", type=int, default=0)
+    pomo_log.add_argument(
+        "--type",
+        type=int,
+        default=0,
+        help="0 for a pomodoro, 1 for an open-ended stopwatch session",
+    )
+    pomo_log.set_defaults(func=cmd_pomo)
+    pomo_sub.choices["status"].set_defaults(func=cmd_pomo)
+
+    return parser
+
+
+def main(argv: list[str]) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        return args.func(args)
+    except TickTickError as error:
+        print(json.dumps({"ok": False, "error": str(error), "authRequired": error.auth_required}), file=sys.stderr)
+        return 3 if error.auth_required else 1
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
