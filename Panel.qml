@@ -904,7 +904,11 @@ Panel {
           // ---- footer
           Text {
             width: parent.width
-            visible: root.actionError !== "" || root.cacheError !== ""
+            // While the setup card is up it already explains the situation in
+            // the plugin's own terms. Repeating the CLI's "run this command"
+            // underneath it contradicts the card, so the cached auth error is
+            // suppressed there. A failed connect attempt still surfaces.
+            visible: root.actionError !== "" || (root.cacheError !== "" && root.signedIn)
             wrapMode: Text.WordWrap
             text: root.actionError !== "" ? root.actionError : root.cacheError
             color: Color.accent
