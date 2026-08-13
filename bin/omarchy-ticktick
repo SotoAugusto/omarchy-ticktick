@@ -753,8 +753,75 @@ def check_in(habit: dict, stamp: int, value: float | None, toggle: bool) -> dict
 # commands
 
 
+def consume_token_file(path: str, wait_seconds: float = 3.0) -> str:
+    """Read a token the panel handed over through a file, then delete it.
+
+    The panel writes with Quickshell's FileView, which saves asynchronously,
+    so the file may not exist yet when this starts. Waiting a moment is what
+    lets the panel avoid passing a full-access credential on the command
+    line, where it would be visible in the process table.
+
+    The file is unlinked whether or not it parsed, so a failed connect never
+    leaves the token sitting on disk.
+    """
+    deadline = time.time() + wait_seconds
+    token = ""
+    try:
+        while time.time() < deadline:
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    token = handle.read().strip()
+                if token:
+                    break
+            except FileNotFoundError:
+                pass
+            time.sleep(0.05)
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+    if not token:
+        raise TickTickError("No token was handed over; nothing to connect with")
+    return token
+
+
+def connect_with_token(raw_token: str, session: dict, email: str = "") -> dict:
+    """Adopt a browser session token, proving it works before storing it."""
+    token = raw_token.strip()
+    if token.startswith("t="):
+        token = token[2:].strip()
+    if not token:
+        raise TickTickError("That token was empty")
+
+    candidate = {
+        "token": token,
+        "userId": session.get("userId", ""),
+        "email": email or session.get("email", ""),
+        "deviceId": device_id(session),
+        "savedAt": int(time.time() * 1000),
+        "source": "browser-cookie",
+    }
+    state = fetch_state(candidate)
+    _write_private(TOKEN_PATH, candidate)
+    write_cache(state)
+    return state
+
+
 def cmd_login(args) -> int:
     session = load_session()
+
+    if getattr(args, "token_file", None):
+        state = connect_with_token(
+            consume_token_file(args.token_file), session, args.email or ""
+        )
+        print(json.dumps({
+            "ok": True,
+            "tasks": len(state["tasks"]),
+            "habits": len(state["habits"]),
+        }))
+        return 0
 
     # Token path. Preferred, and the only one that works on an account whose
     # risk control has stopped trusting scripted password logins: the browser
@@ -763,25 +830,8 @@ def cmd_login(args) -> int:
     if args.token:
         # `--token -` prompts instead, so a full-access credential never lands
         # in shell history.
-        token = getpass.getpass("TickTick `t` cookie: ") if args.token == "-" else args.token
-        token = token.strip()
-        if token.startswith("t="):
-            token = token[2:].strip()
-        if not token:
-            raise TickTickError("--token was empty")
-
-        candidate = {
-            "token": token,
-            "userId": session.get("userId", ""),
-            "email": args.email or session.get("email", ""),
-            "deviceId": device_id(session),
-            "savedAt": int(time.time() * 1000),
-            "source": "browser-cookie",
-        }
-        # Prove it works before it replaces whatever is on disk.
-        state = fetch_state(candidate)
-        _write_private(TOKEN_PATH, candidate)
-        write_cache(state)
+        raw = getpass.getpass("TickTick `t` cookie: ") if args.token == "-" else args.token
+        state = connect_with_token(raw, session, args.email or "")
         print(
             f"Connected with a browser session token: "
             f"{len(state['tasks'])} open tasks, {len(state['habits'])} habits."
@@ -908,6 +958,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     login = sub.add_parser("login", help="authenticate and store a session token")
     login.add_argument("--email")
+    login.add_argument(
+        "--token-file",
+        help="path to a file holding the token; it is consumed and deleted (used by the panel)",
+    )
     login.add_argument(
         "--token",
         help="session token lifted from the browser's `t` cookie; skips the password login entirely",

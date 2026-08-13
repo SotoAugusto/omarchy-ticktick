@@ -15,8 +15,8 @@ import "Model.js" as Model
 // command.
 Panel {
   id: root
-  moduleName: "colocho.ticktick"
-  ipcTarget: "colocho.ticktick"
+  moduleName: "io.github.sotoaugusto.ticktick"
+  ipcTarget: "io.github.sotoaugusto.ticktick"
   manageIpc: false
 
   property var anchorItem: null
@@ -152,6 +152,32 @@ Panel {
     if (!syncProc.running) syncProc.running = true
   }
 
+  // Token handoff. The panel writes the pasted value here and the CLI
+  // consumes and deletes it, so a full-access credential never travels on a
+  // command line where the process table would expose it. The state dir is
+  // 0700, so the file is unreadable by other users for the moment it exists.
+  readonly property string tokenPastePath: Quickshell.env("HOME") + "/.local/state/omarchy/ticktick/token-paste"
+
+  property FileView tokenFile: FileView {
+    path: root.tokenPastePath
+    atomicWrites: true
+    printErrors: false
+  }
+
+  property bool connecting: false
+
+  function connectWithToken() {
+    var token = String(tokenPaste.text || "").trim()
+    if (token === "") return
+    connecting = true
+    actionError = ""
+    tokenFile.setText(token + "\n")
+    tokenPaste.text = ""
+    // The CLI waits briefly for this file, which covers FileView's
+    // asynchronous save without needing a completion signal here.
+    runAction(["login", "--token-file", root.tokenPastePath])
+  }
+
   property FileView dataFile: FileView {
     path: Quickshell.env("HOME") + "/.local/state/omarchy/ticktick/data.json"
     watchChanges: true
@@ -241,6 +267,7 @@ Panel {
     }
     onExited: function(code) {
       if (code === 0) root.actionError = ""
+      root.connecting = false
       root.drainQueue()
     }
   }
@@ -497,6 +524,9 @@ Panel {
           }
 
           // ---- not signed in
+          // ---- setup. This is the only onboarding surface the plugin gets:
+          //      `omarchy plugin add` never runs plugin code or install
+          //      hooks, so there is no post-install script to lean on.
           Column {
             width: parent.width
             spacing: Style.space(6)
@@ -508,8 +538,8 @@ Panel {
               width: parent.width
               wrapMode: Text.WordWrap
               text: root.cache.authRequired
-                ? "TickTick signed this session out. Reconnect from a terminal:"
-                : "Not connected to TickTick yet. Sign in from a terminal:"
+                ? "TickTick ended this session. Paste a fresh token to reconnect."
+                : "Connect your TickTick account. This takes one paste."
               color: root.fg
               font.family: Style.font.family
               font.pixelSize: Style.font.bodySmall
@@ -517,8 +547,51 @@ Panel {
 
             Text {
               width: parent.width
-              wrapMode: Text.WrapAnywhere
-              text: root.cli + " login"
+              wrapMode: Text.WordWrap
+              text: "1. Open ticktick.com and sign in\n"
+                + "2. F12 → Application → Cookies → https://ticktick.com\n"
+                + "3. Copy the value of the cookie named  t"
+              color: root.muted
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              lineHeight: 1.35
+            }
+
+            TextField {
+              id: tokenPaste
+              width: parent.width
+              // The token is equivalent to a password, so it is masked and
+              // never echoed back into the panel.
+              password: true
+              placeholderText: "Paste the t cookie value…"
+              foreground: root.fg
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+              enabled: !root.connecting
+              onAccepted: root.connectWithToken()
+            }
+
+            Row {
+              width: parent.width
+              spacing: Style.space(6)
+
+              Button {
+                text: root.connecting ? "Connecting…" : "Connect"
+                enabled: !root.connecting && String(tokenPaste.text || "").trim() !== ""
+                onClicked: root.connectWithToken()
+              }
+
+              Button {
+                text: "Open TickTick"
+                onClicked: if (root.bar) root.bar.run("xdg-open https://ticktick.com/webapp")
+              }
+            }
+
+            Text {
+              width: parent.width
+              wrapMode: Text.WordWrap
+              visible: !root.cache.authRequired
+              text: " The token stays on this machine, in a 0600 file. Nothing reads your browser."
               color: root.muted
               font.family: Style.font.family
               font.pixelSize: Style.font.caption

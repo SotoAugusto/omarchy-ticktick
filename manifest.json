@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "id": "colocho.ticktick",
+  "id": "io.github.sotoaugusto.ticktick",
   "name": "TickTick",
   "version": "0.1.0",
-  "author": "colocho",
+  "author": "Augusto Soto",
   "description": "Today's TickTick tasks and habits in the bar, with one-click complete and check-in",
   "kinds": [
     "bar-widget"

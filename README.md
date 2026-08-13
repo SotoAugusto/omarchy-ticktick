@@ -39,33 +39,38 @@ No external Python packages, no build step, and nothing is compiled.
 omarchy plugin add https://github.com/<you>/omarchy-ticktick.git --enable
 ```
 
-Then connect it, once, from a real terminal. **Use the browser-token path** —
-it is the one that reliably works:
+Then click the widget in the bar. It shows a plug icon until it is
+connected, and clicking it opens a setup card with three steps and a paste
+field:
 
-1. Sign in to `ticktick.com` in your browser as usual.
-2. DevTools (`F12`) → **Application** → **Cookies** → `https://ticktick.com`
-   → copy the value of the **`t`** cookie. It is HttpOnly, so the Application
-   panel is the only place it shows up.
-3. Paste it into the prompt:
+1. Open `ticktick.com` and sign in
+2. `F12` → **Application** → **Cookies** → `https://ticktick.com`
+3. Copy the value of the cookie named **`t`**, paste it, press Connect
+
+That is the whole setup. The field is masked, the token is handed to the CLI
+through a file in a `0700` directory rather than on a command line, and the
+file is deleted as soon as it is read. Nothing reads your browser.
+
+Why a cookie and not a password: see [About the API](#about-the-api). Short
+version — TickTick's risk control rejects scripted password logins, so the
+browser session is the reliable path.
+
+If you would rather stay in a terminal:
 
 ```bash
-~/.config/omarchy/plugins/colocho.ticktick/bin/omarchy-ticktick login --token -
+~/.config/omarchy/plugins/io.github.sotoaugusto.ticktick/bin/omarchy-ticktick login --token -
 ```
 
 `--token -` prompts with the input hidden, so the credential stays out of
 your shell history.
 
-The panel picks up the cache the moment login writes it — no restart.
-
-There is also a password login (`login` with no flags), but TickTick's risk
-control frequently refuses scripted password logins outright, answering a
-correct password with `username_password_not_match` and then flagging the
-account. The token path avoids the login endpoint entirely.
+When the token eventually expires, the panel returns to the same card and
+says so. Reconnecting is the same paste.
 
 ## Removal
 
 ```bash
-omarchy plugin remove colocho.ticktick
+omarchy plugin remove io.github.sotoaugusto.ticktick
 ```
 
 That disables the widget, drops its entry from `~/.config/omarchy/shell.json`,
@@ -177,7 +182,7 @@ Configure in Setup > Plugins, or inline on the bar entry in
   "bar": {
     "layout": {
       "right": [
-        { "id": "colocho.ticktick", "horizon": "Next 7 days", "maxTasks": 20 }
+        { "id": "io.github.sotoaugusto.ticktick", "horizon": "Next 7 days", "maxTasks": 20 }
       ]
     }
   }
@@ -198,8 +203,8 @@ Configure in Setup > Plugins, or inline on the bar entry in
 IPC, for keybindings:
 
 ```bash
-omarchy-shell colocho.ticktick toggle
-omarchy-shell colocho.ticktick sync
+omarchy-shell io.github.sotoaugusto.ticktick toggle
+omarchy-shell io.github.sotoaugusto.ticktick sync
 ```
 
 ## Tests
@@ -241,7 +246,7 @@ until you deliberately disagree with it, and only the fields you set are
 overridden:
 
 ```json
-{ "id": "colocho.ticktick", "pomoMinutes": 25, "longBreakInterval": 3 }
+{ "id": "io.github.sotoaugusto.ticktick", "pomoMinutes": 25, "longBreakInterval": 3 }
 ```
 
 While a block runs the bar shows the countdown instead of the task count.

@@ -9,7 +9,7 @@ import "Model.js" as Model
 // whether or not the popup has ever been opened.
 BarWidget {
   id: root
-  moduleName: "colocho.ticktick"
+  moduleName: "io.github.sotoaugusto.ticktick"
 
   // nf-fa-tasks. A checklist reads as "things to do" at bar size in a way
   // a check mark does not — a check mark reads as "done".
@@ -31,8 +31,17 @@ BarWidget {
   readonly property bool pomoPaused: panelLoader.item ? panelLoader.item.pomoPaused === true : false
   readonly property bool pomoActive: pomoRunning || pomoPaused
 
-  readonly property string activeIcon: pomoActive ? "" : icon
-  readonly property string activeLabel: pomoActive ? pomoClock : panelLabel
+  // An unconnected plugin gets its own glyph rather than a dimmed checklist:
+  // a faint "0 tasks" reads as "nothing to do", which is the opposite of
+  // "needs setup". A plug says which one it is at a glance.
+  readonly property string setupIcon: ""
+
+  readonly property string activeIcon: !signedIn
+    ? setupIcon
+    : (pomoActive ? "" : icon)
+  readonly property string activeLabel: !signedIn
+    ? "setup"
+    : (pomoActive ? pomoClock : panelLabel)
 
   readonly property string displayText: activeLabel === "" ? activeIcon : activeIcon + "  " + activeLabel
   readonly property var verticalLines: activeLabel === "" ? [activeIcon] : [activeIcon, activeLabel]
@@ -92,7 +101,7 @@ BarWidget {
   }
 
   IpcHandler {
-    target: "colocho.ticktick"
+    target: "io.github.sotoaugusto.ticktick"
 
     function sync(): void { root.broadcast("refresh") }
     function open(): void { root.open() }
@@ -118,7 +127,7 @@ BarWidget {
 
     tooltipText: root.signedIn
       ? (root.hasWork ? "TickTick — click to review" : "TickTick — all clear")
-      : "TickTick — not connected"
+      : "TickTick — click to connect"
 
     onPressed: function(b) {
       if (b === Qt.MiddleButton) root.refresh()
