@@ -168,7 +168,7 @@ Configure in Setup > Plugins, or inline on the bar entry in
 
 | Key | Default | What it does |
 |---|---|---|
-| `refreshIntervalSec` | `300` | Background sync period. TickTick throttles; shorter buys nothing. |
+| `syncInterval` | `5 minutes` | `2 minutes`, `5 minutes`, `15 minutes`, `1 hour`, or `Only when opened`. |
 | `horizon` | `Today` | `Today`, `Tomorrow`, or `Next 7 days`. |
 | `includeOverdue` | `true` | Count and list work that is already late. |
 | `showTasks` | `true` | Show the task section. |
@@ -235,6 +235,38 @@ node --test tests/model.test.js
 visibly wrong — timezone handling on all-day due dates, streak counting
 across a day that is still open, overdue sorting — so it is plain JS with no
 QML imports and runs under node.
+
+## Background sync
+
+The interval is a short list rather than a number field, because the useful
+range is narrow and the costs are not obvious:
+
+| Option | Meaning |
+|---|---|
+| `2 minutes` | for a busy shared list; the most this should ever poll |
+| `5 minutes` | the default |
+| `15 minutes` | fine for a personal list |
+| `1 hour` | you mostly add tasks rather than watch them |
+| `Only when opened` | no background polling at all |
+
+Opening the panel always syncs, and so do the sync button and `r`, so this
+setting governs only the idle case — how fresh the bar's count is while you
+are not looking at it.
+
+Two things make a short list better than a free-form seconds box here. Each
+tick is five HTTP requests, and **a bar surface exists per monitor**, so a
+two-screen desktop fires the timer twice. To keep that from doubling the
+traffic, a timer-driven sync passes `--max-age`: whichever instance gets
+there first does the work, and the second sees a fresh cache and exits
+without a request. Explicit syncs never skip, and neither does a sync with
+anything queued in the outbox.
+
+```bash
+omarchy-ticktick sync --max-age 285   # what the timer runs
+```
+
+`Only when opened` still syncs once shortly after the shell starts —
+otherwise the bar would show a stale count until you first clicked it.
 
 ## Why writes feel immediate
 

@@ -259,6 +259,28 @@ function tagLabel(task, index) {
   return tag ? String(tag.label || tag.name || "") : ""
 }
 
+// ---- sync interval -----------------------------------------------------
+
+// Labels rather than a number field. A free-form seconds box invites values
+// that are either pointless or rude to the API: tasks do not change
+// second-to-second, and every tick costs five requests per bar.
+var SYNC_INTERVALS = {
+  "2 minutes": 120,
+  "5 minutes": 300,
+  "15 minutes": 900,
+  "1 hour": 3600,
+  "Only when opened": 0
+}
+
+function syncIntervalSeconds(label) {
+  var seconds = SYNC_INTERVALS[String(label)]
+  return seconds === undefined ? 300 : seconds
+}
+
+function syncIntervalLabels() {
+  return ["2 minutes", "5 minutes", "15 minutes", "1 hour", "Only when opened"]
+}
+
 // ---- quick add ---------------------------------------------------------
 
 // Inline syntax for the quick-add field. `#tag` and plain date words are
@@ -583,6 +605,8 @@ if (typeof module !== "undefined") {
     tagColor: tagColor,
     tagLabel: tagLabel,
     dueTier: dueTier,
+    syncIntervalSeconds: syncIntervalSeconds,
+    syncIntervalLabels: syncIntervalLabels,
     parseQuickAdd: parseQuickAdd,
     quickAddArgs: quickAddArgs,
     projectName: projectName,

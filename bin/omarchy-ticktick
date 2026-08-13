@@ -1163,6 +1163,19 @@ def cmd_logout(_args) -> int:
 
 def cmd_sync(args) -> int:
     scope = getattr(args, "scope", None) or "full"
+
+    # A bar surface exists per monitor, so every timer tick fires one sync per
+    # screen. Skipping a sync whose work another instance just did halves the
+    # request rate on a two-monitor desktop without any coordination between
+    # them.
+    max_age = getattr(args, "max_age", None)
+    if max_age:
+        cache = _read_json(DATA_PATH)
+        synced_at = int(cache.get("syncedAt") or 0)
+        age = (time.time() * 1000 - synced_at) / 1000
+        if synced_at and age < float(max_age) and not read_outbox():
+            print(json.dumps({"ok": True, "skipped": True, "ageSeconds": round(age)}))
+            return 0
     outbox = {"sent": 0, "queued": len(read_outbox()), "dropped": 0}
     try:
         # Queued work goes out before anything is read back, so the sync that
@@ -1312,6 +1325,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("logout", help="forget the token and cache").set_defaults(func=cmd_logout)
     sync = sub.add_parser("sync", help="refresh the cache the panel reads")
+    sync.add_argument(
+        "--max-age",
+        type=float,
+        help="skip if the cache is younger than this many seconds and nothing is queued",
+    )
     sync.add_argument(
         "--scope",
         choices=("full", "tasks", "habits", "pomo"),

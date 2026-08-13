@@ -537,3 +537,30 @@ test('yesterday is a date word, and needs no widening', () => {
   assert.equal(parsed.due, 'yesterday')
   assert.equal(Model.horizonForDue('yesterday', new Date(2026, 7, 13)), 'Today')
 })
+
+// --- sync interval -------------------------------------------------------
+
+test('each interval label maps to its seconds', () => {
+  assert.equal(Model.syncIntervalSeconds('2 minutes'), 120)
+  assert.equal(Model.syncIntervalSeconds('5 minutes'), 300)
+  assert.equal(Model.syncIntervalSeconds('15 minutes'), 900)
+  assert.equal(Model.syncIntervalSeconds('1 hour'), 3600)
+})
+
+test('"Only when opened" disables the timer with zero', () => {
+  assert.equal(Model.syncIntervalSeconds('Only when opened'), 0)
+})
+
+test('an unknown or missing label falls back to the default', () => {
+  assert.equal(Model.syncIntervalSeconds('every fortnight'), 300)
+  assert.equal(Model.syncIntervalSeconds(undefined), 300)
+  assert.equal(Model.syncIntervalSeconds(''), 300)
+})
+
+test('every offered label resolves, so the picker cannot produce a dud', () => {
+  for (const label of Model.syncIntervalLabels()) {
+    const seconds = Model.syncIntervalSeconds(label)
+    assert.equal(typeof seconds, 'number')
+    assert.ok(seconds === 0 || seconds >= 120, `${label} -> ${seconds}`)
+  }
+})

@@ -60,7 +60,8 @@ Panel {
   readonly property string viewSwitchHint: (nextView === "Today" ? "Back to " : "Show ") + nextView
   readonly property bool includeOverdue: setting("includeOverdue", true) !== false
   readonly property int maxTasks: Math.max(3, parseInt(setting("maxTasks", 12), 10) || 12)
-  readonly property int refreshIntervalSec: Math.max(60, parseInt(setting("refreshIntervalSec", 300), 10) || 300)
+  readonly property int refreshIntervalSec: Model.syncIntervalSeconds(setting("syncInterval", "5 minutes"))
+  readonly property bool autoSyncs: refreshIntervalSec > 0
 
   // Rows the user just acted on. Holding them locally means a tick lands
   // instantly instead of after the round trip, and the next sync is what
@@ -228,9 +229,16 @@ Panel {
     return false
   }
 
-  function refresh() {
+  // `force` is an explicit user action — opening the panel, the sync button,
+  // `r`. Timer ticks are not: they pass a max age so the second monitor's
+  // instance skips work the first one just did.
+  function refresh(force) {
     nowDate = new Date()
-    if (!syncProc.running) syncProc.running = true
+    if (syncProc.running) return
+    syncProc.command = force === false
+      ? [root.cli, "sync", "--max-age", String(Math.max(30, refreshIntervalSec - 15))]
+      : [root.cli, "sync"]
+    syncProc.running = true
   }
 
   // Token handoff. The panel writes the pasted value here and the CLI
@@ -307,11 +315,21 @@ Panel {
 
   Timer {
     id: syncTimer
-    interval: root.refreshIntervalSec * 1000
+    interval: Math.max(60, root.refreshIntervalSec) * 1000
     repeat: true
-    running: true
+    running: root.autoSyncs
     triggeredOnStart: true
-    onTriggered: root.refresh()
+    onTriggered: root.refresh(false)
+  }
+
+  // With background sync off, the cache would still be stale on the first
+  // paint after a shell restart. One sync at startup is not a background
+  // poll; it is the panel having something to show.
+  Timer {
+    interval: 1500
+    running: !root.autoSyncs
+    repeat: false
+    onTriggered: root.refresh(false)
   }
 
   // ---- CLI plumbing -----------------------------------------------------
@@ -321,6 +339,7 @@ Panel {
   Process {
     id: syncProc
     command: [root.cli, "sync"]
+    // command is reassigned per call by refresh()
     stderr: StdioCollector {
       waitForEnd: true
       onStreamFinished: {

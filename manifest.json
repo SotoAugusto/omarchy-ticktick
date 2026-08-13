@@ -18,7 +18,6 @@
     "allowMultiple": false,
     "defaultSection": "right",
     "defaults": {
-      "refreshIntervalSec": 300,
       "showTasks": true,
       "showHabits": true,
       "includeOverdue": true,
@@ -30,18 +29,23 @@
       "pomoMinutes": 0,
       "shortBreakMinutes": 0,
       "longBreakMinutes": 0,
-      "longBreakInterval": 0
+      "longBreakInterval": 0,
+      "syncInterval": "5 minutes"
     },
     "schema": [
       {
-        "key": "refreshIntervalSec",
-        "type": "integer",
-        "label": "Refresh interval (seconds)",
-        "description": "How often the background sync runs. TickTick throttles aggressively, so short intervals buy nothing.",
-        "min": 60,
-        "max": 3600,
-        "step": 30,
-        "defaultValue": 300
+        "key": "syncInterval",
+        "type": "enum",
+        "label": "Background sync",
+        "description": "How often the bar count refreshes on its own. Opening the panel always syncs, so this only governs the idle case. Every tick costs five requests, and a bar exists per monitor.",
+        "options": [
+          "2 minutes",
+          "5 minutes",
+          "15 minutes",
+          "1 hour",
+          "Only when opened"
+        ],
+        "defaultValue": "5 minutes"
       },
       {
         "key": "horizon",
