@@ -465,9 +465,12 @@ Panel {
     var title = String(quickAdd.text || "").trim()
     if (title === "") return
     quickAdd.text = ""
-    pendingAdds = pendingAdds.concat([{ id: "", title: title, ghost: true }])
-    // Quick-add from a "what's due" panel means due now, not someday.
-    runAction(["add", title, "--due", "today"])
+    var args = Model.quickAddArgs(title)
+    if (!args) return
+    // The ghost shows the parsed title, not the raw text, so the syntax is
+    // visibly doing something the moment you press enter.
+    pendingAdds = pendingAdds.concat([{ id: "", title: args[1], ghost: true }])
+    runAction(args)
   }
 
   // ---- surface ----------------------------------------------------------
@@ -629,6 +632,9 @@ Panel {
                 { key: "enter", what: "complete task / check habit in" },
                 { key: "u", what: "undo the held action" },
                 { key: "a", what: "add a task" },
+                { key: "#tag", what: "tag it — # is TickTick's own" },
+                { key: "!1 !2 !3", what: "priority: high, medium, low" },
+                { key: "tomorrow", what: "a trailing date word sets the due date" },
                 { key: "r", what: "sync now" },
                 { key: "p", what: "start or pause focus" },
                 { key: "d / del", what: "discard the focus block" },
@@ -783,7 +789,7 @@ Panel {
             id: quickAdd
             width: parent.width
             visible: root.signedIn && root.showTasks
-            placeholderText: "Add a task for today…"
+            placeholderText: "Add a task…  #tag  !1  tomorrow"
             foreground: root.fg
             font.family: Style.font.family
             font.pixelSize: Style.font.bodySmall

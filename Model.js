@@ -210,6 +210,64 @@ function tagLabel(task, index) {
   return tag ? String(tag.label || tag.name || "") : ""
 }
 
+// ---- quick add ---------------------------------------------------------
+
+// Inline syntax for the quick-add field. `#tag` and plain date words are
+// TickTick's own conventions, so they behave the way its apps taught you.
+// `!` for priority is this plugin's: TickTick has no quick-add symbol for
+// it, so nothing is being contradicted by inventing one.
+var PRIORITY_WORDS = {
+  "1": 5, "high": 5, "h": 5,
+  "2": 3, "medium": 3, "med": 3, "m": 3,
+  "3": 1, "low": 1, "l": 1,
+  "0": 0, "none": 0
+}
+
+function parseQuickAdd(text) {
+  var rest = String(text || "")
+  var tags = []
+  var priority = 0
+  var due = "today"
+
+  rest = rest.replace(/(^|\s)#([^\s#]+)/g, function(match, lead, tag) {
+    tags.push(String(tag).toLowerCase())
+    return lead
+  })
+
+  rest = rest.replace(/(^|\s)!([A-Za-z0-9]+)/g, function(match, lead, word) {
+    var mapped = PRIORITY_WORDS[String(word).toLowerCase()]
+    if (mapped === undefined) return match
+    priority = mapped
+    return lead
+  })
+
+  // Only a trailing date word is treated as a date. "Call mum today" sets a
+  // date; "Plan today's standup" keeps its word.
+  // The preposition goes with the date. Without this, "notes for today"
+  // becomes a task called "notes for".
+  var dateMatch = rest.match(/\s(?:for\s+|on\s+|due\s+|by\s+)?(today|tomorrow|\d{4}-\d{2}-\d{2})\s*$/i)
+  if (dateMatch) {
+    due = dateMatch[1].toLowerCase()
+    rest = rest.slice(0, dateMatch.index)
+  }
+
+  return {
+    title: rest.replace(/\s+/g, " ").trim(),
+    tags: tags,
+    priority: priority,
+    due: due
+  }
+}
+
+function quickAddArgs(text) {
+  var parsed = parseQuickAdd(text)
+  if (parsed.title === "") return null
+  var args = ["add", parsed.title, "--due", parsed.due]
+  if (parsed.priority > 0) args = args.concat(["--priority", String(parsed.priority)])
+  if (parsed.tags.length > 0) args = args.concat(["--tags", parsed.tags.join(",")])
+  return args
+}
+
 // ---- due tiers ---------------------------------------------------------
 
 // TickTick has no colour for "overdue" or "today" — every client paints that
@@ -471,6 +529,8 @@ if (typeof module !== "undefined") {
     tagColor: tagColor,
     tagLabel: tagLabel,
     dueTier: dueTier,
+    parseQuickAdd: parseQuickAdd,
+    quickAddArgs: quickAddArgs,
     projectName: projectName,
     checkinFor: checkinFor,
     habitProgress: habitProgress,

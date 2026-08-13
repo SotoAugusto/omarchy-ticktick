@@ -146,7 +146,7 @@ BarWidget.qml          the bar slot
 omarchy-ticktick login --token -            # paste the browser's `t` cookie
 omarchy-ticktick login [--email ADDR] [--save-password]
 omarchy-ticktick sync [--scope tasks|habits|pomo|full]
-omarchy-ticktick add "Pay rent" --due today
+omarchy-ticktick add "Pay rent" --due today [--priority 0|1|3|5] [--tags work,ops]
 omarchy-ticktick complete <taskId>
 omarchy-ticktick reopen <taskId>
 omarchy-ticktick delete <taskId>
@@ -287,6 +287,39 @@ one hammering a dead network.
 ```bash
 omarchy-ticktick status     # includes the queued count
 ```
+
+## Quick add
+
+The field takes more than a title:
+
+```
+Renew the TLS cert #work !1 tomorrow
+```
+
+| Syntax | Does | Whose convention |
+|---|---|---|
+| `#tag` | attaches a tag, lowercased | TickTick's — `#` is what its apps use |
+| `!1` `!2` `!3` | priority: high, medium, low | this plugin's |
+| `!high` `!med` `!low` | the same, spelled out | this plugin's |
+| trailing `today` / `tomorrow` / `2026-09-01` | sets the due date | TickTick parses dates from text too |
+
+Everything not consumed becomes the title, so the line above creates *Renew
+the TLS cert*, tagged `work`, high priority, due tomorrow. With no syntax at
+all it is a plain task due today.
+
+TickTick has no quick-add symbol for priority — it is still an open request
+on their forum — so `!` is defined here rather than borrowed. `#` and the
+date words match what TickTick already taught you.
+
+Three details worth knowing:
+
+- A date word only counts at the **end**. `Plan today standup` keeps its
+  word; `Standup notes for today` does not, and the preposition goes with the
+  date rather than being left dangling.
+- An unrecognised `!token` is left alone in the title.
+- Tags are lowercased, because that is the key tasks reference them by.
+
+The same syntax is listed under `?` in the panel.
 
 ## Colours
 

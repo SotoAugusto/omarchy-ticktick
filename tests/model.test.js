@@ -405,3 +405,78 @@ test('a timed task earlier today is overdue, not today', () => {
 test('parseCache defaults tags to an empty list', () => {
   assert.deepEqual(Model.parseCache('').tags, [])
 })
+
+// --- quick-add syntax ----------------------------------------------------
+
+test('a bare title is due today with no tags or priority', () => {
+  assert.deepEqual(Model.parseQuickAdd('Pay rent'),
+    { title: 'Pay rent', tags: [], priority: 0, due: 'today' })
+})
+
+test('# attaches tags and strips them from the title', () => {
+  const parsed = Model.parseQuickAdd('Renew cert #work #ops')
+  assert.equal(parsed.title, 'Renew cert')
+  assert.deepEqual(parsed.tags, ['work', 'ops'])
+})
+
+test('tags are lowercased, since that is how tasks reference them', () => {
+  assert.deepEqual(Model.parseQuickAdd('Read #Book').tags, ['book'])
+})
+
+test('! maps to TickTick priorities by number or word', () => {
+  assert.equal(Model.parseQuickAdd('x !1').priority, 5)
+  assert.equal(Model.parseQuickAdd('x !high').priority, 5)
+  assert.equal(Model.parseQuickAdd('x !2').priority, 3)
+  assert.equal(Model.parseQuickAdd('x !med').priority, 3)
+  assert.equal(Model.parseQuickAdd('x !3').priority, 1)
+  assert.equal(Model.parseQuickAdd('x !low').priority, 1)
+})
+
+test('an unrecognised ! token is left in the title', () => {
+  const parsed = Model.parseQuickAdd('Ship !bogus now')
+  assert.equal(parsed.title, 'Ship !bogus now')
+  assert.equal(parsed.priority, 0)
+})
+
+test('a trailing date word sets the due date and leaves', () => {
+  assert.deepEqual(Model.parseQuickAdd('Ship it tomorrow'),
+    { title: 'Ship it', tags: [], priority: 0, due: 'tomorrow' })
+  assert.equal(Model.parseQuickAdd('Review 2026-09-01').due, '2026-09-01')
+})
+
+test('a preposition goes with the trailing date', () => {
+  assert.equal(Model.parseQuickAdd('Standup notes for today').title, 'Standup notes')
+  assert.equal(Model.parseQuickAdd('Ship by tomorrow').title, 'Ship')
+  assert.equal(Model.parseQuickAdd('Review due 2026-09-01').title, 'Review')
+})
+
+test('a date word that is not trailing stays in the title', () => {
+  assert.equal(Model.parseQuickAdd('Plan today standup').title, 'Plan today standup')
+  assert.equal(Model.parseQuickAdd('Today matters').title, 'Today matters')
+})
+
+test('everything combines, in any order', () => {
+  const parsed = Model.parseQuickAdd('Renew the TLS cert #work !1 tomorrow')
+  assert.equal(parsed.title, 'Renew the TLS cert')
+  assert.deepEqual(parsed.tags, ['work'])
+  assert.equal(parsed.priority, 5)
+  assert.equal(parsed.due, 'tomorrow')
+})
+
+test('whitespace is collapsed, not preserved', () => {
+  assert.equal(Model.parseQuickAdd('  spaced   out  #tag  ').title, 'spaced out')
+})
+
+test('quickAddArgs omits flags that are not set', () => {
+  assert.deepEqual(Model.quickAddArgs('Pay rent'), ['add', 'Pay rent', '--due', 'today'])
+})
+
+test('quickAddArgs passes tags and priority through', () => {
+  assert.deepEqual(Model.quickAddArgs('Fix it #ops !1 tomorrow'),
+    ['add', 'Fix it', '--due', 'tomorrow', '--priority', '5', '--tags', 'ops'])
+})
+
+test('quickAddArgs refuses input with no title left', () => {
+  assert.equal(Model.quickAddArgs('   '), null)
+  assert.equal(Model.quickAddArgs('#tag !1'), null)
+})
