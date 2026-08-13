@@ -66,6 +66,46 @@ function stampToDate(stamp) {
 
 // ---- tasks -------------------------------------------------------------
 
+var HORIZONS = ["Today", "Tomorrow", "Next 7 days"]
+
+function cycleHorizon(current, delta) {
+  var i = HORIZONS.indexOf(String(current))
+  if (i < 0) i = 0
+  var next = i + (delta || 1)
+  // Wraps, so one key or one click can reach every view without a second
+  // control for going back.
+  if (next >= HORIZONS.length) next = 0
+  if (next < 0) next = HORIZONS.length - 1
+  return HORIZONS[next]
+}
+
+// The narrowest view that would still show a task due on `dueWord`. Used so
+// adding "…tomorrow" from a Today view does not file the task somewhere the
+// user cannot see it.
+function horizonForDue(dueWord, now) {
+  var word = String(dueWord || "today").toLowerCase()
+  if (word === "today" || word === "yesterday") return "Today"
+  if (word === "tomorrow") return "Tomorrow"
+
+  var parts = word.split("-")
+  if (parts.length === 3) {
+    var target = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]))
+    if (!isNaN(target.getTime())) {
+      var days = Math.round((startOfDay(target).getTime() - startOfDay(now || new Date()).getTime()) / 86400000)
+      if (days <= 0) return "Today"
+      if (days === 1) return "Tomorrow"
+      if (days <= 7) return "Next 7 days"
+      // Further out than any view reaches; the widest is the best on offer.
+      return "Next 7 days"
+    }
+  }
+  return "Today"
+}
+
+function widerHorizon(a, b) {
+  return HORIZONS.indexOf(a) >= HORIZONS.indexOf(b) ? a : b
+}
+
 function horizonDays(horizon) {
   if (horizon === "Tomorrow") return 1
   if (horizon === "Next 7 days") return 7
@@ -245,7 +285,7 @@ function parseQuickAdd(text) {
   // date; "Plan today's standup" keeps its word.
   // The preposition goes with the date. Without this, "notes for today"
   // becomes a task called "notes for".
-  var dateMatch = rest.match(/\s(?:for\s+|on\s+|due\s+|by\s+)?(today|tomorrow|\d{4}-\d{2}-\d{2})\s*$/i)
+  var dateMatch = rest.match(/\s(?:for\s+|on\s+|due\s+|by\s+)?(today|tomorrow|yesterday|\d{4}-\d{2}-\d{2})\s*$/i)
   if (dateMatch) {
     due = dateMatch[1].toLowerCase()
     rest = rest.slice(0, dateMatch.index)
@@ -518,6 +558,9 @@ if (typeof module !== "undefined") {
     dateStamp: dateStamp,
     stampToDate: stampToDate,
     horizonDays: horizonDays,
+    cycleHorizon: cycleHorizon,
+    horizonForDue: horizonForDue,
+    widerHorizon: widerHorizon,
     isOpen: isOpen,
     isOverdue: isOverdue,
     dueTasks: dueTasks,

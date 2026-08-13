@@ -43,7 +43,16 @@ Panel {
   readonly property bool showTasks: setting("showTasks", true) !== false
   readonly property bool showHabits: setting("showHabits", true) !== false
   readonly property bool showPomo: setting("showPomo", true) !== false
+  // The configured horizon is the default the panel opens at; `viewHorizon`
+  // is what it is currently showing. Widening is a look, not a preference
+  // change, so it resets when the panel closes.
   readonly property string horizon: setting("horizon", "Today")
+  property string viewHorizon: horizon
+  onHorizonChanged: viewHorizon = horizon
+
+  function cycleView(delta) {
+    viewHorizon = Model.cycleHorizon(viewHorizon, delta)
+  }
   readonly property bool includeOverdue: setting("includeOverdue", true) !== false
   readonly property int maxTasks: Math.max(3, parseInt(setting("maxTasks", 12), 10) || 12)
   readonly property int refreshIntervalSec: Math.max(60, parseInt(setting("refreshIntervalSec", 300), 10) || 300)
@@ -87,7 +96,7 @@ Panel {
   readonly property string pomoClock: pomoPhase === "idle" ? "" : Model.formatClock(pomoSecondsLeft)
 
   readonly property var allDueTasks: showTasks
-    ? Model.dueTasks(cache.tasks, { now: nowDate, horizon: horizon, includeOverdue: includeOverdue })
+    ? Model.dueTasks(cache.tasks, { now: nowDate, horizon: viewHorizon, includeOverdue: includeOverdue })
     : []
   readonly property var visibleTasks: filterPending(allDueTasks)
   readonly property var listedTasks: visibleTasks.slice(0, maxTasks)
@@ -197,6 +206,7 @@ Panel {
     // Closing is not a cancel. Anything still held is sent, so a click
     // followed by a close does what the click said it would.
     flushPending()
+    viewHorizon = horizon
     quickAdd.text = ""
     quickAdd.focus = false
     root.controller.hide()
@@ -467,6 +477,10 @@ Panel {
     quickAdd.text = ""
     var args = Model.quickAddArgs(title)
     if (!args) return
+    // Adding something due later must not file it out of sight. The view
+    // widens to wherever the task landed.
+    var parsed = Model.parseQuickAdd(title)
+    viewHorizon = Model.widerHorizon(viewHorizon, Model.horizonForDue(parsed.due, nowDate))
     // The ghost shows the parsed title, not the raw text, so the syntax is
     // visibly doing something the moment you press enter.
     pendingAdds = pendingAdds.concat([{ id: "", title: args[1], ghost: true }])
@@ -519,6 +533,8 @@ Panel {
           else root.startPomo("focus")
         }
         else if (text === "d") root.stopPomo()
+        else if (text === "v") root.cycleView(1)
+        else if (text === "V") root.cycleView(-1)
         else if (text === "g") root.moveCursor(-root.navRows.length)
         else if (text === "G") root.moveCursor(root.navRows.length)
       }
@@ -548,14 +564,54 @@ Panel {
               anchors.verticalCenter: parent.verticalCenter
               spacing: Style.space(1)
 
-              Text {
-                text: root.visibleTasks.length === 0 && root.habitsRemaining === 0
-                  ? "All clear"
-                  : root.horizon
-                color: root.fg
-                font.family: Style.font.family
-                font.pixelSize: Style.font.title
-                font.bold: true
+              // The title is the view switch. It already named the range, so
+              // making it the control keeps one label instead of adding a
+              // second one that says the same thing.
+              // The hit area wraps the Row rather than sitting inside it:
+              // a filling MouseArea is a horizontal anchor, and Row refuses
+              // to lay out at all when one of its children uses those.
+              Item {
+                implicitWidth: viewRow.implicitWidth
+                implicitHeight: viewRow.implicitHeight
+                width: implicitWidth
+                height: implicitHeight
+
+                Row {
+                  id: viewRow
+                  spacing: Style.space(5)
+
+                  Text {
+                    id: viewLabel
+                    text: root.visibleTasks.length === 0 && root.habitsRemaining === 0
+                      ? "All clear"
+                      : root.viewHorizon
+                    color: viewSwitch.containsMouse ? Color.accent : root.fg
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.title
+                    font.bold: true
+                  }
+
+                  Text {
+                    anchors.verticalCenter: viewLabel.verticalCenter
+                    text: ""
+                    color: viewSwitch.containsMouse ? Color.accent : root.muted
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                  }
+                }
+
+                MouseArea {
+                  id: viewSwitch
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.cycleView(1)
+
+                  PanelToolTip {
+                    text: "Show further ahead  (v)"
+                    visible: viewSwitch.containsMouse
+                  }
+                }
               }
 
               Text {
@@ -639,6 +695,7 @@ Panel {
                 { key: "p", what: "start or pause focus" },
                 { key: "d / del", what: "discard the focus block" },
                 { key: "g / G", what: "first / last row" },
+                { key: "v", what: "widen the view: today \u2192 tomorrow \u2192 7 days" },
                 { key: "tab", what: "next bar panel" },
                 { key: "?", what: "show or hide this list" },
                 { key: "esc", what: "back out, then close" }

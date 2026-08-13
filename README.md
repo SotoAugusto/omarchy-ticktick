@@ -301,7 +301,7 @@ Renew the TLS cert #work !1 tomorrow
 | `#tag` | attaches a tag, lowercased | TickTick's — `#` is what its apps use |
 | `!1` `!2` `!3` | priority: high, medium, low | this plugin's |
 | `!high` `!med` `!low` | the same, spelled out | this plugin's |
-| trailing `today` / `tomorrow` / `2026-09-01` | sets the due date | TickTick parses dates from text too |
+| trailing `today` / `tomorrow` / `yesterday` / `2026-09-01` | sets the due date | TickTick parses dates from text too |
 
 Everything not consumed becomes the title, so the line above creates *Renew
 the TLS cert*, tagged `work`, high priority, due tomorrow. With no syntax at
@@ -320,6 +320,23 @@ Three details worth knowing:
 - Tags are lowercased, because that is the key tasks reference them by.
 
 The same syntax is listed under `?` in the panel.
+
+## The view, and what it hides
+
+The panel opens on the horizon you configured — `Today` by default, meaning
+overdue work plus today's. That is the point: a bar widget should answer
+"what now", not show a backlog.
+
+But a task you just created must never be invisible, so:
+
+- **Click the title** (or press `v`) to widen: Today → Tomorrow → Next 7 days,
+  wrapping. `V` goes back.
+- **Adding something due later widens the view automatically.** Type
+  `Ship the release tomorrow` from a Today view and the view moves to
+  Tomorrow so you can see what you just made.
+
+Widening is a look, not a setting. Closing the panel returns it to your
+configured `horizon`, so the default never drifts.
 
 ## Colours
 

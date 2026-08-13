@@ -480,3 +480,60 @@ test('quickAddArgs refuses input with no title left', () => {
   assert.equal(Model.quickAddArgs('   '), null)
   assert.equal(Model.quickAddArgs('#tag !1'), null)
 })
+
+// --- horizon switching ---------------------------------------------------
+
+test('cycleHorizon walks forward and wraps', () => {
+  assert.equal(Model.cycleHorizon('Today', 1), 'Tomorrow')
+  assert.equal(Model.cycleHorizon('Tomorrow', 1), 'Next 7 days')
+  assert.equal(Model.cycleHorizon('Next 7 days', 1), 'Today')
+})
+
+test('cycleHorizon walks backward and wraps', () => {
+  assert.equal(Model.cycleHorizon('Today', -1), 'Next 7 days')
+  assert.equal(Model.cycleHorizon('Next 7 days', -1), 'Tomorrow')
+})
+
+test('cycleHorizon recovers from an unknown value', () => {
+  assert.equal(Model.cycleHorizon('nonsense', 1), 'Tomorrow')
+})
+
+test('horizonForDue names the narrowest view that shows the task', () => {
+  const now = new Date(2026, 7, 13)
+  assert.equal(Model.horizonForDue('today', now), 'Today')
+  assert.equal(Model.horizonForDue('tomorrow', now), 'Tomorrow')
+  assert.equal(Model.horizonForDue('2026-08-15', now), 'Next 7 days')
+  assert.equal(Model.horizonForDue('2026-08-13', now), 'Today')
+})
+
+test('a date in the past needs no widening', () => {
+  assert.equal(Model.horizonForDue('2026-08-01', new Date(2026, 7, 13)), 'Today')
+})
+
+test('a date beyond every view falls back to the widest', () => {
+  assert.equal(Model.horizonForDue('2026-12-25', new Date(2026, 7, 13)), 'Next 7 days')
+})
+
+test('horizonForDue survives junk', () => {
+  assert.equal(Model.horizonForDue('garbage', new Date(2026, 7, 13)), 'Today')
+  assert.equal(Model.horizonForDue('', new Date(2026, 7, 13)), 'Today')
+})
+
+test('widerHorizon never narrows the current view', () => {
+  assert.equal(Model.widerHorizon('Today', 'Tomorrow'), 'Tomorrow')
+  assert.equal(Model.widerHorizon('Next 7 days', 'Today'), 'Next 7 days')
+  assert.equal(Model.widerHorizon('Tomorrow', 'Tomorrow'), 'Tomorrow')
+})
+
+test('adding for tomorrow from a Today view widens to Tomorrow', () => {
+  const now = new Date(2026, 7, 13)
+  const parsed = Model.parseQuickAdd('Ship the release tomorrow')
+  assert.equal(Model.widerHorizon('Today', Model.horizonForDue(parsed.due, now)), 'Tomorrow')
+})
+
+test('yesterday is a date word, and needs no widening', () => {
+  const parsed = Model.parseQuickAdd('Buy the TLS cert yesterday')
+  assert.equal(parsed.title, 'Buy the TLS cert')
+  assert.equal(parsed.due, 'yesterday')
+  assert.equal(Model.horizonForDue('yesterday', new Date(2026, 7, 13)), 'Today')
+})

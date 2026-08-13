@@ -945,11 +945,13 @@ def parse_due_argument(value: str) -> str:
         target = today
     elif text == "tomorrow":
         target = today + timedelta(days=1)
+    elif text == "yesterday":
+        target = today - timedelta(days=1)
     else:
         try:
             target = datetime.strptime(value.strip(), "%Y-%m-%d")
         except ValueError as error:
-            raise TickTickError("--due wants today, tomorrow, or YYYY-MM-DD") from error
+            raise TickTickError("--due wants today, tomorrow, yesterday, or YYYY-MM-DD") from error
     # An all-day due date is stored as UTC midnight of the local day.
     return target.strftime("%Y-%m-%dT00:00:00.000+0000")
 
@@ -1334,7 +1336,7 @@ def build_parser() -> argparse.ArgumentParser:
     add = sub.add_parser("add", help="create a task")
     add.add_argument("title")
     add.add_argument("--project", help="project id; defaults to the inbox")
-    add.add_argument("--due", help="today, tomorrow, or YYYY-MM-DD")
+    add.add_argument("--due", help="today, tomorrow, yesterday, or YYYY-MM-DD")
     add.add_argument(
         "--priority", type=int, default=0, choices=(0, 1, 3, 5),
         help="TickTick priority: 0 none, 1 low, 3 medium, 5 high",
