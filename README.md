@@ -136,9 +136,28 @@ shell process, and every mutation is one command you can run yourself.
 ```
 bin/omarchy-ticktick   session, API calls, the JSON cache
 Model.js               task filtering, due labels, habit streaks (node-testable)
-Panel.qml              the popup, and the source of the bar's label
+Service.qml            everything that must exist once, not once per screen
+Panel.qml              the popup — a view of the service
 BarWidget.qml          the bar slot
 ```
+
+### Multiple monitors
+
+A bar surface is created per monitor, so the widget and its panel exist once
+per screen. Anything stateful left in the panel is therefore duplicated, and
+that is not merely wasteful: two focus clocks each upload the block they
+finish, inflating the very statistics the timer exists to keep honest.
+
+`Service.qml` is a `service`-kind plugin, which the shell mounts exactly once
+and hands to views through `shell.serviceFor(id)` — the same arrangement the
+first-party media plugin uses. It owns the cache, the sync timer, the write
+queue, the undo window, and the focus clock. The panels render it and keep
+only what is genuinely per-screen, such as which date range that screen is
+showing.
+
+Two things stay defensive even so, because separate processes are involved:
+delivery of the outbox runs under an exclusive lock, and timer-driven syncs
+pass `--max-age` so a sync another process just finished is not repeated.
 
 ### CLI
 

@@ -6,10 +6,12 @@
   "author": "Augusto Soto",
   "description": "Today's TickTick tasks and habits in the bar, with one-click complete and check-in",
   "kinds": [
-    "bar-widget"
+    "bar-widget",
+    "service"
   ],
   "entryPoints": {
-    "barWidget": "BarWidget.qml"
+    "barWidget": "BarWidget.qml",
+    "service": "Service.qml"
   },
   "barWidget": {
     "displayName": "TickTick",

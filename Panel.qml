@@ -26,10 +26,29 @@ Panel {
   readonly property string pluginDir: Qt.resolvedUrl(".").toString().replace("file://", "")
   readonly property string cli: pluginDir + "bin/omarchy-ticktick"
 
-  // ---- cache ------------------------------------------------------------
+  // ---- the shared service ------------------------------------------------
+  //
+  // A bar exists per monitor, so this panel exists per monitor too. The cache,
+  // the sync timer, the write queue, the undo window, and the focus clock are
+  // all single-instance concerns and live in Service.qml; this reads them.
+  // Without that split, two screens meant two focus clocks each logging the
+  // same block.
+  readonly property var svc: bar && bar.shell && typeof bar.shell.serviceFor === "function"
+    ? bar.shell.serviceFor("io.github.sotoaugusto.ticktick")
+    : null
 
-  property var cache: Model.parseCache("")
-  property date nowDate: new Date()
+  // The service has no settings of its own; every panel carries the same
+  // inline entry, so whichever loads first hands them over.
+  onSvcChanged: pushSettings()
+  onSettingsChanged: pushSettings()
+  function pushSettings() {
+    if (svc && "settings" in svc) svc.settings = root.settings
+  }
+
+  // ---- cache (read through the service) ----------------------------------
+
+  readonly property var cache: svc ? svc.cache : Model.parseCache("")
+  readonly property date nowDate: svc ? svc.nowDate : new Date()
 
   readonly property bool signedIn: cache.syncedAt > 0 && !cache.authRequired
   readonly property string cacheError: cache.error ? String(cache.error) : ""
@@ -60,46 +79,57 @@ Panel {
   readonly property string viewSwitchHint: (nextView === "Today" ? "Back to " : "Show ") + nextView
   readonly property bool includeOverdue: setting("includeOverdue", true) !== false
   readonly property int maxTasks: Math.max(3, parseInt(setting("maxTasks", 12), 10) || 12)
-  readonly property int refreshIntervalSec: Model.syncIntervalSeconds(setting("syncInterval", "5 minutes"))
-  readonly property bool autoSyncs: refreshIntervalSec > 0
 
-  // Rows the user just acted on. Holding them locally means a tick lands
-  // instantly instead of after the round trip, and the next sync is what
-  // actually removes the row.
-  property var pendingIds: ({})
-  property var pendingHabitIds: ({})
+  readonly property var pendingIds: svc ? svc.pendingIds : ({})
+  readonly property var pendingHabitIds: svc ? svc.pendingHabitIds : ({})
+  readonly property var pendingAdds: svc ? svc.pendingAdds : []
+  readonly property var pendingAction: svc ? svc.pendingAction : null
+  readonly property int undoLeft: svc ? svc.undoLeft : 0
+  readonly property int undoSeconds: svc ? svc.undoSeconds : 6
+  readonly property string actionError: svc ? svc.actionError : ""
+  readonly property bool connecting: svc ? svc.connecting : false
+  readonly property int refreshIntervalSec: svc ? svc.refreshIntervalSec : 300
 
-  // Held actions. Nothing is sent until the window lapses, so undo means
-  // the request never happens rather than a second request trying to walk
-  // the first one back.
-  readonly property int undoSeconds: Math.max(0, parseInt(setting("undoSeconds", 6), 10) || 0)
-  property var pendingAction: null
-  property int undoTick: 0
-  readonly property int undoLeft: pendingAction
-    ? Model.undoSecondsLeft(pendingAction.deadline, Date.now() + undoTick * 0)
-    : 0
+  readonly property var pomoStats: svc ? svc.pomoStats : ({})
+  readonly property var pomoPrefs: svc ? svc.pomoPrefs : ({})
+  readonly property string pomoPhase: svc ? svc.pomoPhase : "idle"
+  readonly property bool pomoRunning: svc ? svc.pomoRunning === true : false
+  readonly property bool pomoPaused: svc ? svc.pomoPaused === true : false
+  readonly property string pomoClock: svc ? svc.pomoClock : ""
 
-  // ---- pomodoro. The timer is ours; TickTick has no server-side running
-  //      clock to join. Finished focus blocks are uploaded so the stats and
-  //      history match what its own apps would have recorded.
-  readonly property var pomoStats: cache.pomoStats || ({})
-  readonly property var pomoPrefs: Model.mergePomoPrefs(cache.pomoPrefs, {
-    pomoMinutes: setting("pomoMinutes", 0),
-    shortBreakMinutes: setting("shortBreakMinutes", 0),
-    longBreakMinutes: setting("longBreakMinutes", 0),
-    longBreakInterval: setting("longBreakInterval", 0)
-  })
-  property string pomoPhase: "idle"
-  property real pomoEndMs: 0
-  property real pomoPausedLeft: 0
-  property int pomoBlocksDone: 0
-  property int pomoTick: 0
-  readonly property bool pomoRunning: pomoPhase !== "idle" && pomoEndMs > 0
-  readonly property bool pomoPaused: pomoPhase !== "idle" && pomoEndMs === 0
-  readonly property int pomoSecondsLeft: pomoPaused
-    ? Math.round(pomoPausedLeft)
-    : (pomoRunning ? Math.max(0, Math.round((pomoEndMs - (Date.now() + pomoTick * 0)) / 1000)) : 0)
-  readonly property string pomoClock: pomoPhase === "idle" ? "" : Model.formatClock(pomoSecondsLeft)
+  readonly property bool syncing: svc ? svc.syncing === true : false
+
+  function refresh(force) { if (svc) svc.refresh(force) }
+  function runAction(args) { if (svc) svc.runAction(args) }
+  function completeTask(task) { if (svc) svc.completeTask(task) }
+  function checkInHabit(habit) { if (svc) svc.checkInHabit(habit) }
+  function cancelPending() { if (svc) svc.cancelPending() }
+  function flushPending() { if (svc) svc.flushPending() }
+  function startPomo(phase) { if (svc) svc.startPomo(phase) }
+  function pausePomo() { if (svc) svc.pausePomo() }
+  function resumePomo() { if (svc) svc.resumePomo() }
+  function stopPomo() { if (svc) svc.stopPomo() }
+  function togglePomo() { if (svc) svc.togglePomo() }
+
+  function connectWithToken() {
+    if (!svc) return
+    svc.connectWithToken(tokenPaste.text)
+    tokenPaste.text = ""
+  }
+
+  function submitQuickAdd() {
+    if (!svc) return
+    var text = String(quickAdd.text || "").trim()
+    if (text === "") return
+    quickAdd.text = ""
+    var parsed = svc.submitQuickAdd(text)
+    // Adding something due later must not file it out of sight, so the view
+    // widens to wherever the task landed. That stays here: the range being
+    // shown is this screen's business, not the service's.
+    if (parsed)
+      viewHorizon = Model.widerHorizon(viewHorizon, Model.horizonForDue(parsed.due, nowDate))
+  }
+
 
   readonly property var allDueTasks: showTasks
     ? Model.dueTasks(cache.tasks, { now: nowDate, horizon: viewHorizon, includeOverdue: includeOverdue })
@@ -107,11 +137,6 @@ Panel {
   readonly property var visibleTasks: filterPending(allDueTasks)
   readonly property var listedTasks: visibleTasks.slice(0, maxTasks)
 
-  // Tasks typed but not yet confirmed by a sync. Even a scoped sync is most
-  // of a second, and a quick-add field that swallows what you typed and
-  // shows nothing for that long reads as broken. The row appears on enter;
-  // the next cache write replaces it with the real one.
-  property var pendingAdds: []
   readonly property var displayTasks: pendingAdds.concat(listedTasks)
   readonly property int hiddenTaskCount: Math.max(0, visibleTasks.length - listedTasks.length)
   readonly property int overdueCount: Model.overdueCount(visibleTasks, nowDate)
@@ -187,24 +212,15 @@ Panel {
     return result
   }
 
-  function markPending(taskId) {
-    var next = {}
-    for (var key in pendingIds) next[key] = pendingIds[key]
-    next[taskId] = true
-    pendingIds = next
-  }
-
   // ---- lifecycle --------------------------------------------------------
 
   function open() {
     root.controller.show()
-    dataFile.reload()
     root.refresh()
   }
 
   function openFromHotkey() {
     root.controller.show()
-    dataFile.reload()
     root.refresh()
   }
 
@@ -232,284 +248,7 @@ Panel {
   // `force` is an explicit user action — opening the panel, the sync button,
   // `r`. Timer ticks are not: they pass a max age so the second monitor's
   // instance skips work the first one just did.
-  function refresh(force) {
-    nowDate = new Date()
-    if (syncProc.running) return
-    syncProc.command = force === false
-      ? [root.cli, "sync", "--max-age", String(Math.max(30, refreshIntervalSec - 15))]
-      : [root.cli, "sync"]
-    syncProc.running = true
-  }
-
-  // Token handoff. The panel writes the pasted value here and the CLI
-  // consumes and deletes it, so a full-access credential never travels on a
-  // command line where the process table would expose it. The state dir is
-  // 0700, so the file is unreadable by other users for the moment it exists.
-  readonly property string tokenPastePath: Quickshell.env("HOME") + "/.local/state/omarchy/ticktick/token-paste"
-
-  property FileView tokenFile: FileView {
-    path: root.tokenPastePath
-    atomicWrites: true
-    printErrors: false
-  }
-
-  property bool connecting: false
-
-  function connectWithToken() {
-    var token = String(tokenPaste.text || "").trim()
-    if (token === "") return
-    connecting = true
-    actionError = ""
-    tokenFile.setText(token + "\n")
-    tokenPaste.text = ""
-    // The CLI waits briefly for this file, which covers FileView's
-    // asynchronous save without needing a completion signal here.
-    runAction(["login", "--token-file", root.tokenPastePath])
-  }
-
-  property FileView dataFile: FileView {
-    path: Quickshell.env("HOME") + "/.local/state/omarchy/ticktick/data.json"
-    watchChanges: true
-    printErrors: false
-    onFileChanged: reload()
-    onLoaded: {
-      root.cache = Model.parseCache(text())
-      // The write that lands here is the authority on what is still open,
-      // so optimistic rows stop being needed the moment it arrives.
-      root.pendingIds = ({})
-      root.pendingAdds = []
-    }
-    onLoadFailed: root.cache = Model.parseCache("")
-  }
-
-  Timer {
-    id: undoTimer
-    interval: 6000
-    onTriggered: root.flushPending()
-  }
-
-  Timer {
-    id: undoTicker
-    interval: 250
-    repeat: true
-    running: root.pendingAction !== null
-    onTriggered: root.undoTick++
-  }
-
-  Timer {
-    id: pomoTicker
-    interval: 500
-    repeat: true
-    running: root.pomoRunning
-    onTriggered: {
-      root.pomoTick++
-      if (root.pomoSecondsLeft <= 0) root.pomoFinished()
-    }
-  }
-
-  SystemClock {
-    id: clock
-    precision: SystemClock.Minutes
-    onDateChanged: root.nowDate = date
-  }
-
-  Timer {
-    id: syncTimer
-    interval: Math.max(60, root.refreshIntervalSec) * 1000
-    repeat: true
-    running: root.autoSyncs
-    triggeredOnStart: true
-    onTriggered: root.refresh(false)
-  }
-
-  // With background sync off, the cache would still be stale on the first
-  // paint after a shell restart. One sync at startup is not a background
-  // poll; it is the panel having something to show.
-  Timer {
-    interval: 1500
-    running: !root.autoSyncs
-    repeat: false
-    onTriggered: root.refresh(false)
-  }
-
-  // ---- CLI plumbing -----------------------------------------------------
-
-  property string actionError: ""
-
-  Process {
-    id: syncProc
-    command: [root.cli, "sync"]
-    // command is reassigned per call by refresh()
-    stderr: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        var raw = String(text || "").trim()
-        if (raw !== "") root.actionError = Model.elide(raw, 120)
-      }
-    }
-    onExited: function(code) {
-      if (code === 0) root.actionError = ""
-      root.nowDate = new Date()
-    }
-  }
-
-  // Mutations are serialized through one process: TickTick answers 429 to
-  // bursts, and a queue of at most a few clicks is cheaper than a lockout.
-  property var actionQueue: []
-
-  Process {
-    id: actionProc
-    stderr: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        var raw = String(text || "").trim()
-        if (raw !== "") root.actionError = Model.elide(raw, 120)
-      }
-    }
-    onExited: function(code) {
-      if (code === 0) root.actionError = ""
-      root.connecting = false
-      root.drainQueue()
-    }
-  }
-
-  function runAction(args) {
-    if (actionProc.running) {
-      var queued = actionQueue.slice()
-      queued.push(args)
-      actionQueue = queued
-      return
-    }
-    actionProc.command = [root.cli].concat(args)
-    actionProc.running = true
-  }
-
-  function drainQueue() {
-    if (actionQueue.length === 0) return
-    var queued = actionQueue.slice()
-    var next = queued.shift()
-    actionQueue = queued
-    actionProc.command = [root.cli].concat(next)
-    actionProc.running = true
-  }
-
-  function scheduleAction(kind, title, args, key) {
-    // One pending action at a time: a queue of undoables would need a
-    // queue of undo buttons, and the point is a single obvious escape.
-    flushPending()
-    if (undoSeconds <= 0) {
-      runAction(args)
-      return
-    }
-    pendingAction = {
-      kind: kind,
-      title: title,
-      args: args,
-      key: key,
-      deadline: Date.now() + undoSeconds * 1000
-    }
-    undoTimer.interval = undoSeconds * 1000
-    undoTimer.restart()
-  }
-
-  function flushPending() {
-    if (!pendingAction) return
-    var args = pendingAction.args
-    pendingAction = null
-    undoTimer.stop()
-    runAction(args)
-  }
-
-  function cancelPending() {
-    if (!pendingAction) return
-    var action = pendingAction
-    pendingAction = null
-    undoTimer.stop()
-    if (action.kind === "checkin") clearPendingHabit(action.key)
-    else clearPendingTask(action.key)
-  }
-
-  function clearPendingTask(taskId) {
-    var next = {}
-    for (var key in pendingIds) if (key !== taskId) next[key] = pendingIds[key]
-    pendingIds = next
-  }
-
-  function clearPendingHabit(habitId) {
-    var next = {}
-    for (var key in pendingHabitIds) if (key !== habitId) next[key] = pendingHabitIds[key]
-    pendingHabitIds = next
-  }
-
-  function completeTask(task) {
-    if (!task || !task.id) return
-    markPending(task.id)
-    scheduleAction("complete", task.title, ["complete", String(task.id)], String(task.id))
-  }
-
-  function checkInHabit(habit) {
-    if (!habit || !habit.id) return
-    var next = {}
-    for (var key in pendingHabitIds) next[key] = pendingHabitIds[key]
-    next[String(habit.id)] = true
-    pendingHabitIds = next
-    scheduleAction("checkin", habit.name, ["checkin", String(habit.id), "--toggle"], String(habit.id))
-  }
-
-  // ---- pomodoro control
-  function startPomo(phase) {
-    pomoPhase = phase
-    pomoEndMs = Date.now() + Model.pomoPhaseSeconds(phase, pomoPrefs) * 1000
-    pomoPausedLeft = 0
-  }
-
-  function pausePomo() {
-    if (!pomoRunning) return
-    pomoPausedLeft = Math.max(0, (pomoEndMs - Date.now()) / 1000)
-    pomoEndMs = 0
-  }
-
-  function resumePomo() {
-    if (!pomoPaused) return
-    pomoEndMs = Date.now() + pomoPausedLeft * 1000
-    pomoPausedLeft = 0
-  }
-
-  function stopPomo() {
-    // A stopped focus block is deliberately not logged. TickTick counts a
-    // pomodoro when it completes, and banking partial blocks would inflate
-    // the same statistics this exists to keep honest.
-    pomoPhase = "idle"
-    pomoEndMs = 0
-    pomoPausedLeft = 0
-  }
-
-  function pomoFinished() {
-    if (pomoPhase === "focus") {
-      var minutes = Model.pomoPhaseSeconds("focus", pomoPrefs) / 60
-      runAction(["pomo", "log", "--minutes", String(minutes)])
-      pomoBlocksDone += 1
-      startPomo(Model.pomoPhaseAfter(pomoBlocksDone, pomoPrefs))
-    } else {
-      stopPomo()
-    }
-  }
-
-  function submitQuickAdd() {
-    var title = String(quickAdd.text || "").trim()
-    if (title === "") return
-    quickAdd.text = ""
-    var args = Model.quickAddArgs(title)
-    if (!args) return
-    // Adding something due later must not file it out of sight. The view
-    // widens to wherever the task landed.
-    var parsed = Model.parseQuickAdd(title)
-    viewHorizon = Model.widerHorizon(viewHorizon, Model.horizonForDue(parsed.due, nowDate))
-    // The ghost shows the parsed title, not the raw text, so the syntax is
-    // visibly doing something the moment you press enter.
-    pendingAdds = pendingAdds.concat([{ id: "", title: args[1], ghost: true }])
-    runAction(args)
-  }
+  // Syncing is the service's job; this only asks.
 
   // ---- surface ----------------------------------------------------------
 
@@ -704,8 +443,8 @@ Panel {
               id: syncButton
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
-              iconText: syncProc.running ? "" : ""
-              tooltipText: syncProc.running ? "Syncing…" : "Sync now"
+              iconText: root.syncing ? "" : ""
+              tooltipText: root.syncing ? "Syncing…" : "Sync now"
               foreground: root.fg
               onClicked: root.refresh()
             }
@@ -1252,7 +991,7 @@ Panel {
 
   function headerSubtitle() {
     if (!signedIn) return "Not connected"
-    if (syncProc.running) return "Syncing…"
+    if (root.syncing) return "Syncing…"
 
     var parts = []
     if (showTasks) parts.push(visibleTasks.length + (visibleTasks.length === 1 ? " task" : " tasks"))
