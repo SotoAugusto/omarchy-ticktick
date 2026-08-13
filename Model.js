@@ -68,6 +68,15 @@ function stampToDate(stamp) {
 
 var HORIZONS = ["Today", "Tomorrow", "Next 7 days"]
 
+function horizons() {
+  return HORIZONS
+}
+
+function horizonIndex(horizon) {
+  var i = HORIZONS.indexOf(String(horizon))
+  return i < 0 ? 0 : i
+}
+
 function cycleHorizon(current, delta) {
   var i = HORIZONS.indexOf(String(current))
   if (i < 0) i = 0
@@ -559,6 +568,8 @@ if (typeof module !== "undefined") {
     stampToDate: stampToDate,
     horizonDays: horizonDays,
     cycleHorizon: cycleHorizon,
+    horizons: horizons,
+    horizonIndex: horizonIndex,
     horizonForDue: horizonForDue,
     widerHorizon: widerHorizon,
     isOpen: isOpen,

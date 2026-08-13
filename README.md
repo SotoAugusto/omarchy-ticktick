@@ -331,9 +331,12 @@ overdue work plus today's. That is the point: a bar widget should answer
 But a task you just created must never be invisible, so:
 
 - **Click the title** (or press `v`) to cycle the range: Today → Tomorrow →
-  Next 7 days → back to Today. `V` steps the other way. The tooltip names
-  where the next click lands rather than a direction, since the control
-  wraps — it reads "Show Tomorrow", then "Show Next 7 days", then "Back to
+  Next 7 days → back to Today. `V` steps the other way.
+- Position dots beside the title (`● ○ ○`) show how many ranges there are and
+  which one you are on. They are deliberately not a chevron: a chevron
+  promises a dropdown, and this control cycles.
+- The tooltip names where the next click lands rather than a direction, since
+  the control wraps — "Show Tomorrow", then "Show Next 7 days", then "Back to
   Today".
 - **Adding something due later widens the view automatically.** Type
   `Ship the release tomorrow` from a Today view and the view moves to

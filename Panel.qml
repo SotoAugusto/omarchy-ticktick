@@ -596,12 +596,29 @@ Panel {
                     font.bold: true
                   }
 
-                  Text {
+                  // Position dots, not a chevron. A chevron promises a
+                  // dropdown; this cycles. The dots also say how many ranges
+                  // there are and which one is showing, which the chevron
+                  // never did.
+                  Row {
                     anchors.verticalCenter: viewLabel.verticalCenter
-                    text: ""
-                    color: viewSwitch.containsMouse ? Color.accent : root.muted
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.caption
+                    spacing: Style.space(3)
+
+                    Repeater {
+                      model: Model.horizons()
+
+                      Text {
+                        required property int index
+                        readonly property bool current: index === Model.horizonIndex(root.viewHorizon)
+
+                        text: current ? "●" : "○"
+                        color: current
+                          ? (viewSwitch.containsMouse ? Color.accent : root.fg)
+                          : root.muted
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.caption
+                      }
+                    }
                   }
                 }
 
