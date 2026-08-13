@@ -53,6 +53,11 @@ Panel {
   function cycleView(delta) {
     viewHorizon = Model.cycleHorizon(viewHorizon, delta)
   }
+
+  // Naming the destination beats naming the direction: the control wraps, so
+  // "further ahead" is wrong exactly when you are at the widest view.
+  readonly property string nextView: Model.cycleHorizon(viewHorizon, 1)
+  readonly property string viewSwitchHint: (nextView === "Today" ? "Back to " : "Show ") + nextView
   readonly property bool includeOverdue: setting("includeOverdue", true) !== false
   readonly property int maxTasks: Math.max(3, parseInt(setting("maxTasks", 12), 10) || 12)
   readonly property int refreshIntervalSec: Math.max(60, parseInt(setting("refreshIntervalSec", 300), 10) || 300)
@@ -608,7 +613,7 @@ Panel {
                   onClicked: root.cycleView(1)
 
                   PanelToolTip {
-                    text: "Show further ahead  (v)"
+                    text: root.viewSwitchHint + "  (v)"
                     visible: viewSwitch.containsMouse
                   }
                 }
@@ -695,7 +700,7 @@ Panel {
                 { key: "p", what: "start or pause focus" },
                 { key: "d / del", what: "discard the focus block" },
                 { key: "g / G", what: "first / last row" },
-                { key: "v", what: "widen the view: today \u2192 tomorrow \u2192 7 days" },
+                { key: "v", what: "cycle range: today \u2192 tomorrow \u2192 7 days \u21ba" },
                 { key: "tab", what: "next bar panel" },
                 { key: "?", what: "show or hide this list" },
                 { key: "esc", what: "back out, then close" }
