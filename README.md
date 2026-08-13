@@ -249,6 +249,8 @@ IPC, for keybindings:
 ```bash
 omarchy-shell io.github.sotoaugusto.ticktick toggle
 omarchy-shell io.github.sotoaugusto.ticktick sync
+omarchy-shell io.github.sotoaugusto.ticktick focus       # start or pause a block
+omarchy-shell io.github.sotoaugusto.ticktick focusStop   # discard it
 ```
 
 `toggle`, `open`, `close`, `show`, and `hide` open the panel on the monitor

@@ -19,6 +19,10 @@ BarWidget {
   // and when it is silently dropped the widget renders a bare number.
   readonly property string icon: ""
 
+  readonly property var service: bar && bar.shell && typeof bar.shell.serviceFor === "function"
+    ? bar.shell.serviceFor("io.github.sotoaugusto.ticktick")
+    : null
+
   readonly property string panelLabel: panelLoader.item ? panelLoader.item.label : ""
   readonly property int overdueCount: panelLoader.item ? panelLoader.item.overdueCount : 0
   readonly property bool hasWork: panelLoader.item ? panelLoader.item.hasWork : false
@@ -118,6 +122,12 @@ BarWidget {
 
     // Refresh is not a place, so it goes to every instance.
     function sync(): void { root.broadcast("refresh") }
+
+    // The focus clock lives in the service, so these are not per-monitor and
+    // need no routing. Bindable: `omarchy-shell <id> focus` starts or pauses
+    // a block without opening anything.
+    function focus(): void { if (root.service) root.service.togglePomo() }
+    function focusStop(): void { if (root.service) root.service.stopPomo() }
 
     function open(): void { root.focusedInstance().open() }
     function close(): void { root.focusedInstance().close() }
