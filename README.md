@@ -204,7 +204,7 @@ Configure in Setup > Plugins, or inline on the bar entry in
 | Panel | `a` | focus the quick-add field |
 | Panel | `r` | sync now |
 | Panel | `p` | start or pause focus |
-| Panel | `s` | discard the focus block |
+| Panel | `d` / `del` | discard the focus block (not logged) |
 | Panel | `g` / `G` | first / last row |
 | Panel | `tab` | next bar panel |
 | Panel | `?` | show or hide the shortcut list |

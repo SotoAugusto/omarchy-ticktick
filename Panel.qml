@@ -486,6 +486,9 @@ Panel {
         if (dy !== 0) root.moveCursor(dy > 0 ? 1 : -1)
       }
       onActivateRequested: root.activateCursor()
+      // Destructive actions answer to Delete in the first-party panels, so
+      // discarding a focus block does too.
+      onDeleteRequested: root.stopPomo()
       onReturnRequested: root.activateCursor()
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(text) {
@@ -498,7 +501,7 @@ Panel {
           else if (root.pomoPaused) root.resumePomo()
           else root.startPomo("focus")
         }
-        else if (text === "s") root.stopPomo()
+        else if (text === "d") root.stopPomo()
         else if (text === "g") root.moveCursor(-root.navRows.length)
         else if (text === "G") root.moveCursor(root.navRows.length)
       }
@@ -588,7 +591,7 @@ Panel {
                 { key: "a", what: "add a task" },
                 { key: "r", what: "sync now" },
                 { key: "p", what: "start or pause focus" },
-                { key: "s", what: "discard the focus block" },
+                { key: "d / del", what: "discard the focus block" },
                 { key: "g / G", what: "first / last row" },
                 { key: "tab", what: "next bar panel" },
                 { key: "?", what: "show or hide this list" },
