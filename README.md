@@ -23,9 +23,15 @@ turns urgent when something is late. Left click opens the panel.
 
 ## Requirements
 
-Omarchy 4 with Quickshell, `python3` (standard library only), and a TickTick
-account. `secret-tool` (libsecret) is optional and only used if you want the
-session to renew itself.
+| Dependency | Required | Why |
+|---|---|---|
+| Omarchy 4 (Quattro) with Quickshell | yes | the shell that hosts the plugin |
+| `python3` | yes | the CLI; standard library only, no pip packages |
+| `curl` | no | not used — the CLI speaks HTTP through `urllib` |
+| `secret-tool` (libsecret) | no | only for the optional `--save-password` path |
+| A TickTick account | yes | free accounts work; habits need TickTick's own habit feature |
+
+No external Python packages, no build step, and nothing is compiled.
 
 ## Install
 
@@ -55,6 +61,26 @@ There is also a password login (`login` with no flags), but TickTick's risk
 control frequently refuses scripted password logins outright, answering a
 correct password with `username_password_not_match` and then flagging the
 account. The token path avoids the login endpoint entirely.
+
+## Removal
+
+```bash
+omarchy plugin remove colocho.ticktick
+```
+
+That disables the widget, drops its entry from `~/.config/omarchy/shell.json`,
+and deletes the plugin directory. Two things live outside it and are left
+behind on purpose, because they are your data and your credential:
+
+```bash
+omarchy-ticktick logout                     # forget the token + keyring entry
+rm -rf ~/.local/state/omarchy/ticktick      # remove the cache and session file
+```
+
+Run `logout` **before** removing the plugin if you want the keyring entry
+cleared too — the CLI is what knows how to clear it, and removal deletes the
+CLI. Nothing in TickTick itself is touched: no tasks, habits, or focus
+sessions are deleted by uninstalling.
 
 ## About the API
 
