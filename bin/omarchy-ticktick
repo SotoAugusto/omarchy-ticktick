@@ -26,6 +26,8 @@ Commands:
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import getpass
 import json
 import os
@@ -50,6 +52,7 @@ STATE_DIR = os.path.join(
 TOKEN_PATH = os.path.join(STATE_DIR, "session.json")
 DATA_PATH = os.path.join(STATE_DIR, "data.json")
 OUTBOX_PATH = os.path.join(STATE_DIR, "outbox.json")
+DRAIN_LOCK_PATH = os.path.join(STATE_DIR, "drain.lock")
 
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
@@ -569,6 +572,33 @@ def replay(entry: dict, session: dict) -> None:
 
     else:
         raise TickTickError(f"Unknown queued action {kind!r}")
+
+
+@contextlib.contextmanager
+def drain_lock():
+    """Hold the exclusive right to deliver queued writes, or yield False.
+
+    A bar surface exists per monitor, so two panels can sync at the same
+    instant. Without this both replay the same entry: measured, both reported
+    sending it. Adds survive that because their id is generated client-side,
+    but a queued check-in takes the add path with no id and would insert
+    twice. Whoever loses the race simply skips — the winner is already doing
+    the work.
+    """
+    _ensure_state_dir()
+    handle = open(DRAIN_LOCK_PATH, "w")
+    try:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+    finally:
+        handle.close()
 
 
 def drain_outbox(session: dict) -> dict:
@@ -1181,7 +1211,12 @@ def cmd_sync(args) -> int:
         # Queued work goes out before anything is read back, so the sync that
         # follows reflects the writes rather than contradicting them.
         if outbox["queued"]:
-            outbox, _ = with_reauth(drain_outbox)
+            with drain_lock() as held:
+                if held:
+                    outbox, _ = with_reauth(drain_outbox)
+                else:
+                    # Another bar is delivering these right now.
+                    outbox = dict(outbox, skippedDrain=True)
         state, _ = with_reauth(lambda session: fetch_state(session, scope))
     except TickTickError as error:
         write_error_cache(str(error), error.auth_required)
