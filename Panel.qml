@@ -88,6 +88,13 @@ Panel {
     : []
   readonly property var visibleTasks: filterPending(allDueTasks)
   readonly property var listedTasks: visibleTasks.slice(0, maxTasks)
+
+  // Tasks typed but not yet confirmed by a sync. Even a scoped sync is most
+  // of a second, and a quick-add field that swallows what you typed and
+  // shows nothing for that long reads as broken. The row appears on enter;
+  // the next cache write replaces it with the real one.
+  property var pendingAdds: []
+  readonly property var displayTasks: pendingAdds.concat(listedTasks)
   readonly property int hiddenTaskCount: Math.max(0, visibleTasks.length - listedTasks.length)
   readonly property int overdueCount: Model.overdueCount(visibleTasks, nowDate)
 
@@ -106,7 +113,7 @@ Panel {
   readonly property var navRows: {
     var rows = []
     if (showTasks) {
-      for (var i = 0; i < listedTasks.length; i++) rows.push({ section: "task", index: i })
+      for (var i = 0; i < displayTasks.length; i++) rows.push({ section: "task", index: i })
     }
     if (showHabits) {
       for (var j = 0; j < habits.length; j++) rows.push({ section: "habit", index: j })
@@ -131,7 +138,9 @@ Panel {
   function activateCursor() {
     if (cursor < 0 || cursor >= navRows.length) return
     var row = navRows[cursor]
-    if (row.section === "task") completeTask(listedTasks[row.index])
+    // completeTask ignores an id-less ghost, so a pending row is inert
+    // rather than silently completing the wrong task.
+    if (row.section === "task") completeTask(displayTasks[row.index])
     else checkInHabit(habits[row.index])
   }
 
@@ -242,6 +251,7 @@ Panel {
       // The write that lands here is the authority on what is still open,
       // so optimistic rows stop being needed the moment it arrives.
       root.pendingIds = ({})
+      root.pendingAdds = []
     }
     onLoadFailed: root.cache = Model.parseCache("")
   }
@@ -452,6 +462,7 @@ Panel {
     var title = String(quickAdd.text || "").trim()
     if (title === "") return
     quickAdd.text = ""
+    pendingAdds = pendingAdds.concat([{ id: "", title: title, ghost: true }])
     // Quick-add from a "what's due" panel means due now, not someday.
     runAction(["add", title, "--due", "today"])
   }
@@ -771,7 +782,7 @@ Panel {
 
             Text {
               width: parent.width
-              visible: root.listedTasks.length === 0
+              visible: root.displayTasks.length === 0
               text: "Nothing due."
               color: root.muted
               font.family: Style.font.family
@@ -779,14 +790,15 @@ Panel {
             }
 
             Repeater {
-              model: root.listedTasks
+              model: root.displayTasks
 
               Rectangle {
                 id: taskRow
                 required property var modelData
                 required property int index
                 readonly property bool selected: root.isCursorOn("task", index)
-                readonly property bool late: Model.isOverdue(modelData, root.nowDate)
+                readonly property bool pending: modelData.ghost === true
+                readonly property bool late: !pending && Model.isOverdue(modelData, root.nowDate)
                 readonly property string tier: Model.dueTier(modelData, root.nowDate)
                 readonly property string tagHex: Model.tagColor(modelData, root.tagsById)
                 readonly property string tagName: Model.tagLabel(modelData, root.tagsById)
@@ -829,6 +841,7 @@ Panel {
 
                     Text {
                       anchors.centerIn: parent
+                      opacity: taskRow.pending ? 0.45 : 1
                       text: circleHover.containsMouse ? "" : ""
                       color: taskRow.late ? Color.accent : root.muted
                       font.family: Style.font.family
@@ -883,7 +896,7 @@ Panel {
                   Text {
                     id: dueLabel
                     anchors.verticalCenter: parent.verticalCenter
-                    text: Model.dueLabel(taskRow.modelData, root.nowDate)
+                    text: taskRow.pending ? "adding…" : Model.dueLabel(taskRow.modelData, root.nowDate)
                     color: taskRow.tier === "overdue"
                       ? Color.accent
                       : (taskRow.tier === "today" ? root.fg : root.muted)

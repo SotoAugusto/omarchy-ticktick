@@ -143,7 +143,7 @@ BarWidget.qml          the bar slot
 ```bash
 omarchy-ticktick login --token -            # paste the browser's `t` cookie
 omarchy-ticktick login [--email ADDR] [--save-password]
-omarchy-ticktick sync                       # refresh the cache
+omarchy-ticktick sync [--scope tasks|habits|pomo|full]
 omarchy-ticktick add "Pay rent" --due today
 omarchy-ticktick complete <taskId>
 omarchy-ticktick reopen <taskId>
@@ -231,6 +231,26 @@ node --test tests/model.test.js
 visibly wrong — timezone handling on all-day due dates, streak counting
 across a day that is still open, overdue sorting — so it is plain JS with no
 QML imports and runs under node.
+
+## Why writes feel immediate
+
+A write costs a sync, and a full sync is five HTTP round trips — about two
+seconds. Adding a task cannot change your habits, your check-ins, or your
+pomodoro settings, so re-fetching them afterwards spends most of that second
+confirming that nothing happened.
+
+Syncs are therefore scoped. A task write refreshes tasks only, a check-in
+refreshes habits only, and a finished focus block refreshes the pomodoro
+stats. Sections outside the scope keep their cached values.
+
+```bash
+omarchy-ticktick sync --scope tasks     # ~0.6s, vs ~2.0s for full
+```
+
+On top of that, a quick-added task appears in the list the moment you press
+enter, before the request completes. The next cache write replaces it with
+the real one. The placeholder row is inert — it has no id yet, so it cannot
+be completed by accident.
 
 ## Colours
 

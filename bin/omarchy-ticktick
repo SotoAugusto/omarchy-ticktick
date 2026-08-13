@@ -437,75 +437,101 @@ def parse_api_time(value: str | None) -> datetime | None:
 # reads
 
 
-def fetch_state(session: dict) -> dict:
-    """One sync round: tasks, projects, habits, and this month's check-ins."""
-    batch = request("GET", "/batch/check/0", session)
-    if not isinstance(batch, dict):
-        raise TickTickError("Unexpected shape from batch/check/0")
+def fetch_state(session: dict, scope: str = "full") -> dict:
+    """One sync round: tasks, projects, habits, and this month's check-ins.
 
-    tasks = (batch.get("syncTaskBean") or {}).get("update") or []
-    projects = batch.get("projectProfiles") or []
-    # Tags are the one place TickTick actually stores a colour the user
-    # picked. Tasks reference them by `name`, the lowercase key; `label` is
-    # what gets shown.
-    tags = batch.get("tags") or []
-    inbox_id = batch.get("inboxId", "")
+    `scope` exists because a write costs a sync, and a full sync is five
+    round trips. Adding a task cannot change your habits, your check-ins, or
+    your pomodoro settings, so re-fetching them afterwards is a second and a
+    half spent confirming that nothing happened. Sections outside the scope
+    are carried over from the cache untouched.
+    """
+    previous = _read_json(DATA_PATH)
+    want_tasks = scope in ("full", "tasks")
+    want_habits = scope in ("full", "habits")
+    want_pomo = scope in ("full", "pomo")
 
-    habits = request("GET", "/habits", session)
-    if not isinstance(habits, list):
-        habits = []
-    active_habits = [h for h in habits if h.get("status", 0) == 0]
+    if not want_tasks:
+        tasks = previous.get("tasks", [])
+        projects = previous.get("projects", [])
+        tags = previous.get("tags", [])
+        inbox_id = previous.get("inboxId", "")
+    else:
+        batch = request("GET", "/batch/check/0", session)
+        if not isinstance(batch, dict):
+            raise TickTickError("Unexpected shape from batch/check/0")
 
-    checkins: dict = {}
-    habit_ids = [h["id"] for h in active_habits if h.get("id")]
-    if habit_ids:
-        # 60 days back is enough to draw a streak without pulling a decade
-        # of history on every sync.
-        after = date_stamp(datetime.now() - timedelta(days=60))
-        response = request(
-            "POST",
-            "/habitCheckins/query",
-            session,
-            payload={"habitIds": habit_ids, "afterStamp": after},
-        )
-        if isinstance(response, dict):
-            checkins = response.get("checkins") or {}
-
-    # Pomodoro is best-effort: it is a secondary panel section, and losing it
-    # to a hiccup should not cost the caller their tasks and habits.
-    pomo_stats: dict = {}
-    pomo_prefs: dict = {}
-    try:
-        stats = request("GET", "/pomodoros/statistics/generalForDesktop", session)
-        if isinstance(stats, dict):
-            pomo_stats = stats
-        prefs = request("GET", "/user/preferences/pomodoro", session)
-        if isinstance(prefs, dict):
-            pomo_prefs = prefs
-    except TickTickError:
-        pass
-
-    return {
-        "syncedAt": int(time.time() * 1000),
-        "inboxId": inbox_id,
-        "pomoStats": pomo_stats,
-        "pomoPrefs": pomo_prefs,
-        "tags": [
-            {"name": t.get("name"), "label": t.get("label"), "color": t.get("color")}
-            for t in tags
-            if isinstance(t, dict) and t.get("name")
-        ],
-        "projects": [
+        raw_tasks = (batch.get("syncTaskBean") or {}).get("update") or []
+        tasks = [t for t in raw_tasks if isinstance(t, dict) and not t.get("deleted")]
+        projects = [
             {
                 "id": p.get("id"),
                 "name": p.get("name"),
                 "color": p.get("color"),
                 "closed": bool(p.get("closed")),
             }
-            for p in projects
+            for p in (batch.get("projectProfiles") or [])
             if isinstance(p, dict)
-        ],
-        "tasks": [t for t in tasks if isinstance(t, dict) and not t.get("deleted")],
+        ]
+        # Tags are the one place TickTick actually stores a colour the user
+        # picked. Tasks reference them by `name`, the lowercase key; `label`
+        # is what gets shown.
+        tags = [
+            {"name": t.get("name"), "label": t.get("label"), "color": t.get("color")}
+            for t in (batch.get("tags") or [])
+            if isinstance(t, dict) and t.get("name")
+        ]
+        inbox_id = batch.get("inboxId", "")
+
+    if not want_habits:
+        active_habits = previous.get("habits", [])
+        checkins = previous.get("checkins", {})
+    else:
+        habits = request("GET", "/habits", session)
+        if not isinstance(habits, list):
+            habits = []
+        active_habits = [h for h in habits if h.get("status", 0) == 0]
+
+        checkins = {}
+        habit_ids = [h["id"] for h in active_habits if h.get("id")]
+        if habit_ids:
+            # 60 days back is enough to draw a streak without pulling a
+            # decade of history on every sync.
+            after = date_stamp(datetime.now() - timedelta(days=60))
+            response = request(
+                "POST",
+                "/habitCheckins/query",
+                session,
+                payload={"habitIds": habit_ids, "afterStamp": after},
+            )
+            if isinstance(response, dict):
+                checkins = response.get("checkins") or {}
+
+    # Pomodoro is best-effort: it is a secondary panel section, and losing it
+    # to a hiccup should not cost the caller their tasks and habits.
+    pomo_stats: dict = previous.get("pomoStats", {})
+    pomo_prefs: dict = previous.get("pomoPrefs", {})
+    try:
+        if not want_pomo:
+            raise StopIteration
+        stats = request("GET", "/pomodoros/statistics/generalForDesktop", session)
+        if isinstance(stats, dict):
+            pomo_stats = stats
+        prefs = request("GET", "/user/preferences/pomodoro", session)
+        if isinstance(prefs, dict):
+            pomo_prefs = prefs
+    except (TickTickError, StopIteration):
+        pass
+
+    return {
+        "syncedAt": int(time.time() * 1000),
+        "scope": scope,
+        "inboxId": inbox_id,
+        "pomoStats": pomo_stats,
+        "pomoPrefs": pomo_prefs,
+        "tags": tags,
+        "projects": projects,
+        "tasks": tasks,
         "habits": active_habits,
         "checkins": checkins,
         "todayStamp": date_stamp(),
@@ -888,34 +914,50 @@ def cmd_logout(_args) -> int:
     return 0
 
 
-def cmd_sync(_args) -> int:
+def cmd_sync(args) -> int:
+    scope = getattr(args, "scope", None) or "full"
     try:
-        state, _ = with_reauth(fetch_state)
+        state, _ = with_reauth(lambda session: fetch_state(session, scope))
     except TickTickError as error:
         write_error_cache(str(error), error.auth_required)
         raise
     write_cache(state)
-    print(json.dumps({"ok": True, "tasks": len(state["tasks"]), "habits": len(state["habits"])}))
+    print(json.dumps({
+        "ok": True,
+        "scope": scope,
+        "tasks": len(state["tasks"]),
+        "habits": len(state["habits"]),
+    }))
     return 0
+
+
+def sync_after_write(args, scope: str) -> None:
+    """Refresh only what the write could have touched."""
+    previous = getattr(args, "scope", None)
+    args.scope = scope
+    try:
+        cmd_sync(args)
+    finally:
+        args.scope = previous
 
 
 def cmd_complete(args) -> int:
     task = set_task_status(args.task_id, STATUS_DONE)
-    cmd_sync(args)
+    sync_after_write(args, "tasks")
     print(json.dumps({"ok": True, "completed": task["id"]}))
     return 0
 
 
 def cmd_reopen(args) -> int:
     task = set_task_status(args.task_id, STATUS_TODO)
-    cmd_sync(args)
+    sync_after_write(args, "tasks")
     print(json.dumps({"ok": True, "reopened": task["id"]}))
     return 0
 
 
 def cmd_add(args) -> int:
     task = create_task(args.title, args.project, args.due)
-    cmd_sync(args)
+    sync_after_write(args, "tasks")
     print(json.dumps({"ok": True, "id": task["id"], "title": task["title"]}))
     return 0
 
@@ -924,7 +966,7 @@ def cmd_checkin(args) -> int:
     habit = resolve_habit(args.habit)
     stamp = int(args.date) if args.date else date_stamp()
     entry = check_in(habit, stamp, args.value, args.toggle)
-    cmd_sync(args)
+    sync_after_write(args, "habits")
     print(json.dumps({"ok": True, "habit": habit.get("name"), "value": entry["value"], "status": entry["status"]}))
     return 0
 
@@ -938,7 +980,7 @@ def cmd_pomo(args) -> int:
     end = datetime.now(timezone.utc)
     start = end - timedelta(minutes=float(args.minutes))
     entry = log_pomodoro(start, end, args.pause_seconds, args.type)
-    cmd_sync(args)
+    sync_after_write(args, "pomo")
     print(json.dumps({"ok": True, "id": entry["id"], "minutes": float(args.minutes)}))
     return 0
 
@@ -983,7 +1025,14 @@ def build_parser() -> argparse.ArgumentParser:
     login.set_defaults(func=cmd_login)
 
     sub.add_parser("logout", help="forget the token and cache").set_defaults(func=cmd_logout)
-    sub.add_parser("sync", help="refresh the cache the panel reads").set_defaults(func=cmd_sync)
+    sync = sub.add_parser("sync", help="refresh the cache the panel reads")
+    sync.add_argument(
+        "--scope",
+        choices=("full", "tasks", "habits", "pomo"),
+        default="full",
+        help="limit the refresh; sections outside the scope keep their cached values",
+    )
+    sync.set_defaults(func=cmd_sync)
     sub.add_parser("status", help="print cache state as JSON").set_defaults(func=cmd_status)
 
     complete = sub.add_parser("complete", help="mark a task done")
