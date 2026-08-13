@@ -33,6 +33,9 @@ Panel {
 
   readonly property bool signedIn: cache.syncedAt > 0 && !cache.authRequired
   readonly property string cacheError: cache.error ? String(cache.error) : ""
+  // Writes made while TickTick was unreachable, waiting on the next sync.
+  readonly property int queuedCount: cache.queued || 0
+
   readonly property int staleMinutes: Model.staleMinutes(cache.syncedAt, nowDate.getTime())
 
   readonly property int todayStamp: Model.dateStamp(nowDate)
@@ -557,6 +560,32 @@ Panel {
                 color: root.muted
                 font.family: Style.font.family
                 font.pixelSize: Style.font.caption
+              }
+            }
+
+            // Offline work should be visible without opening anything. It
+            // sits next to the sync button because that is what clears it.
+            Text {
+              anchors.right: helpButton.left
+              anchors.rightMargin: Style.space(6)
+              anchors.verticalCenter: parent.verticalCenter
+              visible: root.queuedCount > 0
+              text: " " + root.queuedCount
+              color: Color.accent
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+
+              PanelToolTip {
+                text: root.queuedCount + " change(s) waiting for TickTick"
+                visible: queuedHover.containsMouse
+              }
+
+              MouseArea {
+                id: queuedHover
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.refresh()
               }
             }
 
@@ -1124,6 +1153,8 @@ Panel {
     var parts = []
     if (showTasks) parts.push(visibleTasks.length + (visibleTasks.length === 1 ? " task" : " tasks"))
     if (showHabits && habits.length > 0) parts.push(habitsRemaining + " of " + habits.length + " habits")
+
+    if (queuedCount > 0) parts.push(queuedCount + " waiting to send")
 
     var age = staleMinutes
     if (age > 10) parts.push("synced " + age + "m ago")

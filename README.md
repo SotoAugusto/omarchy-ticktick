@@ -147,6 +147,7 @@ omarchy-ticktick sync [--scope tasks|habits|pomo|full]
 omarchy-ticktick add "Pay rent" --due today
 omarchy-ticktick complete <taskId>
 omarchy-ticktick reopen <taskId>
+omarchy-ticktick delete <taskId>
 omarchy-ticktick checkin "Read" --toggle    # by name or id
 omarchy-ticktick checkin "Water" --value 3
 omarchy-ticktick pomo status                # today's focus stats + settings
@@ -251,6 +252,39 @@ On top of that, a quick-added task appears in the list the moment you press
 enter, before the request completes. The next cache write replaces it with
 the real one. The placeholder row is inert — it has no id yet, so it cannot
 be completed by accident.
+
+## Offline
+
+A write made while TickTick is unreachable is not lost and not silently
+dropped. It goes into an outbox at
+`~/.local/state/omarchy/ticktick/outbox.json`, and the change is applied to
+the local cache immediately — so the task appears in the list, the habit
+shows checked, and both survive a shell restart rather than living only in
+the panel's memory.
+
+Every sync drains the queue before reading anything back, so what you get
+afterwards reflects your writes instead of contradicting them. The panel
+shows a cloud and a count while anything is waiting; clicking it retries.
+
+This is safe to replay because **every write carries a client-generated id** —
+tasks, check-in entries, and pomodoro records alike. Sending a queued write
+twice updates the same record instead of creating a duplicate.
+
+Replays resolve against current server state rather than being sent verbatim.
+A v2 update is a whole-object write, so a queued completion re-fetches the
+task and changes only its status; anything you edited on another device in
+the meantime survives. Queued check-ins re-query the day's entry before
+deciding whether to add or update it.
+
+A write that TickTick actively *rejects* is dropped rather than retried
+forever, since replaying a rejection only earns another rejection. A write
+that never got a verdict — no network, or a rate limit — is kept and retried.
+When the queue stalls, the remaining entries stay in order instead of each
+one hammering a dead network.
+
+```bash
+omarchy-ticktick status     # includes the queued count
+```
 
 ## Colours
 

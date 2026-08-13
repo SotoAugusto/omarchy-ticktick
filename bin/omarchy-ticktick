@@ -49,6 +49,7 @@ STATE_DIR = os.path.join(
 )
 TOKEN_PATH = os.path.join(STATE_DIR, "session.json")
 DATA_PATH = os.path.join(STATE_DIR, "data.json")
+OUTBOX_PATH = os.path.join(STATE_DIR, "outbox.json")
 
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
@@ -71,10 +72,20 @@ CHECKIN_DONE = 2
 class TickTickError(RuntimeError):
     """Anything that should reach the user as a message rather than a stack."""
 
-    def __init__(self, message: str, auth_required: bool = False, status: int | None = None):
+    def __init__(
+        self,
+        message: str,
+        auth_required: bool = False,
+        status: int | None = None,
+        transient: bool = False,
+    ):
         super().__init__(message)
         self.auth_required = auth_required
         self.status = status
+        # Transient means "the request never got a verdict" — the network was
+        # down, or TickTick asked us to slow down. Those are worth queueing.
+        # A rejection is not: replaying it just gets rejected again.
+        self.transient = transient
 
 
 # v2 reports failures in-band as often as by status code, and it picks the
@@ -309,6 +320,7 @@ def request(
             raise TickTickError(
                 "TickTick is rate limiting this account. Wait a few minutes.",
                 status=429,
+                transient=True,
             ) from error
         if error.code == 404:
             raise TickTickError(
@@ -318,7 +330,11 @@ def request(
             ) from error
         raise TickTickError(f"HTTP {error.code} from {path}: {body[:200]}", status=error.code) from error
     except urllib.error.URLError as error:
-        raise TickTickError(f"Network error talking to TickTick: {error.reason}") from error
+        raise TickTickError(
+            f"Network error talking to TickTick: {error.reason}", transient=True
+        ) from error
+    except TimeoutError as error:
+        raise TickTickError("TickTick timed out", transient=True) from error
 
     if not raw:
         return {}
@@ -431,6 +447,161 @@ def parse_api_time(value: str | None) -> datetime | None:
         return datetime.fromisoformat(text)
     except ValueError:
         return None
+
+
+# --------------------------------------------------------------------------
+# outbox
+#
+# Every write this plugin makes carries a client-generated id, so replaying a
+# queued write updates the same record rather than creating a second one.
+# That is what makes an outbox safe here.
+
+
+def read_outbox() -> list:
+    data = _read_json(OUTBOX_PATH)
+    entries = data.get("entries") if isinstance(data, dict) else None
+    return entries if isinstance(entries, list) else []
+
+
+def write_outbox(entries: list) -> None:
+    _write_private(OUTBOX_PATH, {"version": 1, "entries": entries})
+
+
+def queue_write(kind: str, payload: dict, reason: str) -> dict:
+    """Park a write that never reached TickTick, and apply it locally now.
+
+    Applying to the cache immediately is the point: the queued change stays
+    visible across a shell restart instead of living only in the panel's
+    memory, where a restart would lose it silently.
+    """
+    entry = {
+        "id": object_id(),
+        "kind": kind,
+        "payload": payload,
+        "queuedAt": int(time.time() * 1000),
+        "attempts": 0,
+        "lastError": reason,
+    }
+    write_outbox(read_outbox() + [entry])
+    apply_locally(kind, payload)
+    return entry
+
+
+def apply_locally(kind: str, payload: dict) -> None:
+    """Mirror a queued write into the cache the panel reads."""
+    cache = _read_json(DATA_PATH)
+    if not cache:
+        return
+
+    if kind == "add":
+        cache.setdefault("tasks", []).append(payload["task"])
+
+    elif kind in ("complete", "reopen"):
+        target = STATUS_DONE if kind == "complete" else STATUS_TODO
+        for task in cache.get("tasks", []):
+            if task.get("id") == payload["taskId"]:
+                task["status"] = target
+                break
+
+    elif kind == "checkin":
+        entry = payload["entry"]
+        habit_id = entry["habitId"]
+        entries = cache.setdefault("checkins", {}).setdefault(habit_id, [])
+        for i, existing in enumerate(entries):
+            if existing.get("checkinStamp") == entry["checkinStamp"]:
+                entries[i] = entry
+                break
+        else:
+            entries.append(entry)
+
+    elif kind == "pomo":
+        stats = cache.setdefault("pomoStats", {})
+        minutes = payload.get("minutes", 0)
+        stats["todayPomoCount"] = int(stats.get("todayPomoCount", 0)) + 1
+        stats["todayPomoDuration"] = int(stats.get("todayPomoDuration", 0)) + int(minutes)
+
+    cache["queued"] = len(read_outbox())
+    _write_private(DATA_PATH, cache)
+
+
+def replay(entry: dict, session: dict) -> None:
+    """Send one queued write, resolving it against current server state.
+
+    A v2 update is a whole-object write, so replaying a stale copy of a task
+    would undo anything changed elsewhere since it was queued. Each replay
+    therefore re-fetches the record and changes only the field the user
+    actually acted on.
+    """
+    kind = entry.get("kind")
+    payload = entry.get("payload") or {}
+
+    if kind == "add":
+        batch_task(session, add=[payload["task"]])
+
+    elif kind in ("complete", "reopen"):
+        task = dict(find_task(payload["taskId"], session))
+        task["status"] = STATUS_DONE if kind == "complete" else STATUS_TODO
+        if kind == "complete":
+            task["completedTime"] = payload.get("completedTime") or now_api_time()
+        else:
+            task.pop("completedTime", None)
+        batch_task(session, update=[task])
+
+    elif kind == "checkin":
+        entry_payload = dict(payload["entry"])
+        existing = query_checkin(session, entry_payload["habitId"], entry_payload["checkinStamp"])
+        body = {"add": [], "update": [], "delete": []}
+        if existing and existing.get("id"):
+            entry_payload["id"] = existing["id"]
+            body["update"].append(entry_payload)
+        else:
+            entry_payload.pop("id", None)
+            body["add"].append(entry_payload)
+        request("POST", "/habitCheckins/batch", session, payload=body)
+
+    elif kind == "pomo":
+        request(
+            "POST",
+            "/batch/pomodoro",
+            session,
+            payload={"add": [payload["entry"]], "update": [], "delete": []},
+        )
+
+    else:
+        raise TickTickError(f"Unknown queued action {kind!r}")
+
+
+def drain_outbox(session: dict) -> dict:
+    """Replay everything queued, oldest first. Stops at the first outage."""
+    entries = read_outbox()
+    if not entries:
+        return {"sent": 0, "queued": 0, "dropped": 0}
+
+    remaining, sent, dropped = [], 0, 0
+    stalled = False
+
+    for entry in entries:
+        if stalled:
+            remaining.append(entry)
+            continue
+        try:
+            replay(entry, session)
+            sent += 1
+        except TickTickError as error:
+            entry["attempts"] = int(entry.get("attempts", 0)) + 1
+            entry["lastError"] = str(error)
+            if error.transient:
+                # Still offline. Keep the rest queued and preserve order
+                # rather than hammering a dead network once per entry.
+                remaining.append(entry)
+                stalled = True
+            else:
+                # A rejection will be rejected again forever. Dropping it is
+                # the only way the queue ever empties, so it is surfaced.
+                dropped += 1
+
+    write_outbox(remaining)
+    return {"sent": sent, "queued": len(remaining), "dropped": dropped}
 
 
 # --------------------------------------------------------------------------
@@ -552,6 +723,7 @@ def write_error_cache(message: str, auth_required: bool) -> None:
     cache = _read_json(DATA_PATH)
     cache["error"] = message
     cache["authRequired"] = auth_required
+    cache["queued"] = len(read_outbox())
     cache["erroredAt"] = int(time.time() * 1000)
     cache.setdefault("tasks", [])
     cache.setdefault("habits", [])
@@ -629,7 +801,18 @@ def log_pomodoro(start: datetime, end: datetime, pause_seconds: int, pomo_type: 
             payload={"add": [entry], "update": [], "delete": []},
         )
 
-    result, _ = with_reauth(call)
+    try:
+        result, _ = with_reauth(call)
+    except TickTickError as error:
+        if not error.transient:
+            raise
+        queue_write(
+            "pomo",
+            {"entry": entry, "minutes": round((end - start).total_seconds() / 60)},
+            str(error),
+        )
+        entry["queued"] = True
+        return entry
     errors = (result or {}).get("id2error") or {}
     if errors:
         raise TickTickError(f"TickTick rejected the focus session: {errors}")
@@ -662,8 +845,37 @@ def set_task_status(task_id: str, status: int) -> dict:
         holder["task"] = task
         return batch_task(session, update=[task])
 
-    with_reauth(call)
+    try:
+        with_reauth(call)
+    except TickTickError as error:
+        if not error.transient:
+            raise
+        queue_write(
+            "complete" if status == STATUS_DONE else "reopen",
+            {"taskId": task_id, "completedTime": now_api_time()},
+            str(error),
+        )
+        holder["task"] = {"id": task_id, "queued": True}
     return holder["task"]
+
+
+def delete_task(task_id: str) -> dict:
+    """Remove a task outright. v2 wants the project id alongside the task id."""
+    def call(session):
+        task = find_task(task_id, session)
+        return request(
+            "POST",
+            "/batch/task",
+            session,
+            payload={
+                "add": [],
+                "update": [],
+                "delete": [{"taskId": task_id, "projectId": task.get("projectId", "")}],
+            },
+        )
+
+    with_reauth(call)
+    return {"id": task_id}
 
 
 def create_task(title: str, project_id: str | None, due: str | None) -> dict:
@@ -689,7 +901,15 @@ def create_task(title: str, project_id: str | None, due: str | None) -> dict:
     def call(session):
         return batch_task(session, add=[task])
 
-    with_reauth(call)
+    try:
+        with_reauth(call)
+    except TickTickError as error:
+        if not error.transient:
+            raise
+        # The id was generated here, so replaying this later updates the same
+        # task rather than creating a duplicate.
+        queue_write("add", {"task": task}, str(error))
+        task["queued"] = True
     return task
 
 
@@ -780,7 +1000,23 @@ def check_in(habit: dict, stamp: int, value: float | None, toggle: bool) -> dict
         request("POST", "/habitCheckins/batch", session, payload=payload)
         return entry
 
-    entry, _ = with_reauth(call)
+    try:
+        entry, _ = with_reauth(call)
+    except TickTickError as error:
+        if not error.transient:
+            raise
+        goal_value = float(habit.get("goal") or 1)
+        entry = {
+            "habitId": habit_id,
+            "checkinStamp": stamp,
+            "checkinTime": now_api_time(),
+            "opTime": now_api_time(),
+            "goal": goal_value,
+            "value": value if value is not None else goal_value,
+            "status": CHECKIN_DONE,
+        }
+        queue_write("checkin", {"entry": entry}, str(error))
+        entry["queued"] = True
     return entry
 
 
@@ -916,17 +1152,26 @@ def cmd_logout(_args) -> int:
 
 def cmd_sync(args) -> int:
     scope = getattr(args, "scope", None) or "full"
+    outbox = {"sent": 0, "queued": len(read_outbox()), "dropped": 0}
     try:
+        # Queued work goes out before anything is read back, so the sync that
+        # follows reflects the writes rather than contradicting them.
+        if outbox["queued"]:
+            outbox, _ = with_reauth(drain_outbox)
         state, _ = with_reauth(lambda session: fetch_state(session, scope))
     except TickTickError as error:
         write_error_cache(str(error), error.auth_required)
         raise
+    state["queued"] = len(read_outbox())
     write_cache(state)
     print(json.dumps({
         "ok": True,
         "scope": scope,
         "tasks": len(state["tasks"]),
         "habits": len(state["habits"]),
+        "queued": state["queued"],
+        "sent": outbox.get("sent", 0),
+        "dropped": outbox.get("dropped", 0),
     }))
     return 0
 
@@ -941,15 +1186,32 @@ def sync_after_write(args, scope: str) -> None:
         args.scope = previous
 
 
+def queued_result(payload: dict) -> int:
+    """A queued write succeeded from the user's side; only delivery is late."""
+    print(json.dumps(dict(payload, ok=True, queued=True)))
+    return 0
+
+
 def cmd_complete(args) -> int:
     task = set_task_status(args.task_id, STATUS_DONE)
+    if task.get("queued"):
+        return queued_result({"completed": task["id"]})
     sync_after_write(args, "tasks")
     print(json.dumps({"ok": True, "completed": task["id"]}))
     return 0
 
 
+def cmd_delete(args) -> int:
+    delete_task(args.task_id)
+    sync_after_write(args, "tasks")
+    print(json.dumps({"ok": True, "deleted": args.task_id}))
+    return 0
+
+
 def cmd_reopen(args) -> int:
     task = set_task_status(args.task_id, STATUS_TODO)
+    if task.get("queued"):
+        return queued_result({"reopened": task["id"]})
     sync_after_write(args, "tasks")
     print(json.dumps({"ok": True, "reopened": task["id"]}))
     return 0
@@ -957,6 +1219,8 @@ def cmd_reopen(args) -> int:
 
 def cmd_add(args) -> int:
     task = create_task(args.title, args.project, args.due)
+    if task.get("queued"):
+        return queued_result({"id": task["id"], "title": task["title"]})
     sync_after_write(args, "tasks")
     print(json.dumps({"ok": True, "id": task["id"], "title": task["title"]}))
     return 0
@@ -966,6 +1230,8 @@ def cmd_checkin(args) -> int:
     habit = resolve_habit(args.habit)
     stamp = int(args.date) if args.date else date_stamp()
     entry = check_in(habit, stamp, args.value, args.toggle)
+    if entry.get("queued"):
+        return queued_result({"habit": habit.get("name")})
     sync_after_write(args, "habits")
     print(json.dumps({"ok": True, "habit": habit.get("name"), "value": entry["value"], "status": entry["status"]}))
     return 0
@@ -980,6 +1246,8 @@ def cmd_pomo(args) -> int:
     end = datetime.now(timezone.utc)
     start = end - timedelta(minutes=float(args.minutes))
     entry = log_pomodoro(start, end, args.pause_seconds, args.type)
+    if entry.get("queued"):
+        return queued_result({"id": entry["id"], "minutes": float(args.minutes)})
     sync_after_write(args, "pomo")
     print(json.dumps({"ok": True, "id": entry["id"], "minutes": float(args.minutes)}))
     return 0
@@ -996,6 +1264,7 @@ def cmd_status(_args) -> int:
                 "habits": len(cache.get("habits", [])),
                 "error": cache.get("error"),
                 "authRequired": bool(cache.get("authRequired")),
+                "queued": len(read_outbox()),
                 "dataPath": DATA_PATH,
             }
         )
@@ -1038,6 +1307,10 @@ def build_parser() -> argparse.ArgumentParser:
     complete = sub.add_parser("complete", help="mark a task done")
     complete.add_argument("task_id")
     complete.set_defaults(func=cmd_complete)
+
+    remove = sub.add_parser("delete", help="delete a task outright")
+    remove.add_argument("task_id")
+    remove.set_defaults(func=cmd_delete)
 
     reopen = sub.add_parser("reopen", help="mark a done task not-done")
     reopen.add_argument("task_id")
