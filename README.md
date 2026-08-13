@@ -155,6 +155,13 @@ queue, the undo window, and the focus clock. The panels render it and keep
 only what is genuinely per-screen, such as which date range that screen is
 showing.
 
+Panel routing is the bar's job, not the plugin's. A widget lives once per
+monitor, but an IPC target resolves to a single handler, so a keybind used to
+open the panel on whichever instance registered first. The bar already
+answers this for `shell.summon` by asking Hyprland which output is focused,
+so the plugin's own IPC calls borrow that resolution rather than acting
+locally.
+
 Two things stay defensive even so, because separate processes are involved:
 delivery of the outbox runs under an exclusive lock, and timer-driven syncs
 pass `--max-age` so a sync another process just finished is not repeated.
@@ -243,6 +250,11 @@ IPC, for keybindings:
 omarchy-shell io.github.sotoaugusto.ticktick toggle
 omarchy-shell io.github.sotoaugusto.ticktick sync
 ```
+
+`toggle`, `open`, `close`, `show`, and `hide` open the panel on the monitor
+Hyprland currently has focused, not on whichever copy of the widget happens
+to own the IPC target. `sync` goes to every instance, since refreshing is not
+a place.
 
 ## Tests
 

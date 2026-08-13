@@ -100,15 +100,30 @@ BarWidget {
     }
   }
 
+  // An IPC target routes to exactly one handler, but this widget is live once
+  // per monitor, so the instance that claimed the target is rarely the one you
+  // are looking at. The bar already resolves this for `shell.summon` by asking
+  // Hyprland which output is focused; these calls borrow the same resolution
+  // instead of acting locally and opening a panel on the other screen.
+  function focusedInstance() {
+    if (root.bar && typeof root.bar.findPanelWidget === "function") {
+      var item = root.bar.findPanelWidget(root.moduleName)
+      if (item) return item
+    }
+    return root
+  }
+
   IpcHandler {
     target: "io.github.sotoaugusto.ticktick"
 
+    // Refresh is not a place, so it goes to every instance.
     function sync(): void { root.broadcast("refresh") }
-    function open(): void { root.open() }
-    function close(): void { root.close() }
-    function show(): void { root.open() }
-    function hide(): void { root.close() }
-    function toggle(): void { root.togglePanel() }
+
+    function open(): void { root.focusedInstance().open() }
+    function close(): void { root.focusedInstance().close() }
+    function show(): void { root.focusedInstance().open() }
+    function hide(): void { root.focusedInstance().close() }
+    function toggle(): void { root.focusedInstance().togglePanel() }
   }
 
   WidgetButton {
