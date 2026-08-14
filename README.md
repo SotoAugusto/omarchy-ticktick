@@ -430,16 +430,19 @@ configured `horizon`, so the default never drifts.
 
 ## Long titles
 
-Panel rows **truncate** — one line, elided on the right. They do not wrap and
-they do not scroll: seven scrolling lines cannot be scanned, and a bar popup
-is for scanning.
+A title wider than the row is elided — until you point at it. **The row under
+the mouse, or under the keyboard cursor, scrolls to reveal the rest**, pauses
+at the end, and slides back.
 
-The bar is the exception. With `barLabel` set to `Next` the label is somebody's
-task title, which is as long as they felt like typing, so it **scrolls**
-instead of being cut off. The speed is proportional to length, so reading pace
-stays constant, and it stops while the panel is open. This mirrors the
-first-party media widget, which scrolls a track name in the bar and elides in
-its own popup.
+Only that one row moves. A list where every long title animates at once cannot
+be scanned, and scanning is what the list is for. Nothing scrolls until you
+show interest in a specific row, and a row that stops mid-scroll returns home
+rather than sitting half off the edge.
+
+The bar gets the same treatment in `Next` mode, where the label is a task
+title: it scrolls rather than being cut at 28 characters. Reading speed is
+constant in both places, so a longer title takes longer instead of moving
+faster.
 
 ## Colours
 

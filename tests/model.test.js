@@ -286,13 +286,11 @@ test('undoSecondsLeft counts down and floors at zero', () => {
 })
 
 test('undoLabel names the action and elides a long title', () => {
-  assert.equal(
-    Model.undoLabel({ kind: 'complete', title: 'Pay rent' }, 5),
-    'Completed Pay rent · undo 5s')
-  assert.equal(
-    Model.undoLabel({ kind: 'checkin', title: 'Read' }, 3),
-    'Checked in Read · undo 3s')
-  assert.ok(Model.undoLabel({ kind: 'complete', title: 'x'.repeat(80) }, 2).length < 50)
+  // The countdown is drawn as its own element so it can never be the part
+  // that gets truncated.
+  assert.equal(Model.undoLabel({ kind: 'complete', title: 'Pay rent' }, 5), 'Completed Pay rent')
+  assert.equal(Model.undoLabel({ kind: 'checkin', title: 'Read' }, 3), 'Checked in Read')
+  assert.ok(Model.undoLabel({ kind: 'complete', title: 'x'.repeat(80) }, 2).length < 45)
 })
 
 test('undoLabel tolerates no pending action', () => {

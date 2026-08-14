@@ -262,6 +262,13 @@ Panel {
     // followed by a close does what the click said it would.
     flushPending()
     viewHorizon = horizon
+    // A stale cursor is worse than none: reopening and pressing enter would
+    // act on whatever was selected in a previous session, which is not the
+    // row the user is looking at.
+    cursor = -1
+    cursorActive = false
+    editingTaskId = ""
+    quickAdd.text = ""
     quickAdd.text = ""
     quickAdd.focus = false
     root.controller.hide()
@@ -565,12 +572,24 @@ Panel {
 
               Text {
                 anchors.verticalCenter: parent.verticalCenter
-                width: parent.width - Style.space(40)
+                // Only the title elides; the countdown is the point of the
+                // row and must never be the part that gets cut.
+                width: parent.width - Style.space(30) - undoCount.implicitWidth
                 elide: Text.ElideRight
                 text: Model.undoLabel(root.pendingAction, root.undoLeft)
                 color: root.fg
                 font.family: Style.font.family
                 font.pixelSize: Style.font.bodySmall
+              }
+
+              Text {
+                id: undoCount
+                anchors.verticalCenter: parent.verticalCenter
+                text: "undo " + root.undoLeft + "s"
+                color: Color.accent
+                font.family: Style.font.family
+                font.pixelSize: Style.font.bodySmall
+                font.bold: true
               }
             }
 
@@ -808,19 +827,56 @@ Panel {
                     }
                   }
 
-                  Text {
+                  // A title longer than the row is truncated until you point
+                  // at it, and then it scrolls. Only the row under the cursor
+                  // moves: a list where every long row animates at once cannot
+                  // be scanned, which is the whole job of this list.
+                  Item {
+                    id: titleClip
                     anchors.verticalCenter: parent.verticalCenter
                     width: parent.width - Style.space(30)
-                      - (taskRow.tagHex !== "" ? Style.space(14) : 0)
+                      - Style.space(14)
                       - dueLabel.implicitWidth
-                    elide: Text.ElideRight
-                    text: String(taskRow.modelData.title || "")
-                    // Three tiers, not two: overdue shouts, today is normal
-                    // weight, anything further out recedes.
-                    color: taskRow.tier === "upcoming" ? root.muted : root.fg
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.bodySmall
-                    font.bold: Model.priorityRank(taskRow.modelData) === "high"
+                    height: taskRow.height
+                    clip: true
+
+                    Text {
+                      id: titleText
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: String(taskRow.modelData.title || "")
+                      color: taskRow.tier === "upcoming" ? root.muted : root.fg
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.bodySmall
+                      font.bold: Model.priorityRank(taskRow.modelData) === "high"
+
+                      readonly property bool overflowing: implicitWidth > titleClip.width
+                      readonly property bool scrolling: overflowing
+                        && (taskRow.selected || taskHover.containsMouse)
+
+                      width: scrolling ? implicitWidth : titleClip.width
+                      elide: scrolling ? Text.ElideNone : Text.ElideRight
+
+                      // Leaving mid-scroll would strand the text half off the
+                      // row, so it returns home when it stops.
+                      onScrollingChanged: if (!scrolling) x = 0
+
+                      SequentialAnimation on x {
+                        running: titleText.scrolling
+                        loops: Animation.Infinite
+
+                        PauseAnimation { duration: 700 }
+                        NumberAnimation {
+                          from: 0
+                          to: Math.min(0, titleClip.width - titleText.implicitWidth)
+                          // Constant reading speed, so a longer title takes
+                          // longer rather than moving faster.
+                          duration: Math.max(900, (titleText.implicitWidth - titleClip.width) * 28)
+                          easing.type: Easing.Linear
+                        }
+                        PauseAnimation { duration: 1100 }
+                        NumberAnimation { to: 0; duration: 350; easing.type: Easing.OutCubic }
+                      }
+                    }
                   }
 
                   Text {

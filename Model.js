@@ -574,11 +574,12 @@ function undoSecondsLeft(deadlineMs, nowMs) {
   return Math.max(0, Math.ceil((deadlineMs - (nowMs || Date.now())) / 1000))
 }
 
+// The countdown is rendered separately, so this is only the sentence part.
 function undoLabel(pending, secondsLeft) {
   if (!pending) return ""
-  var name = elide(String(pending.title || ""), 24)
+  var name = elide(String(pending.title || ""), 26)
   var verb = pending.kind === "checkin" ? "Checked in" : "Completed"
-  return verb + " " + name + " · undo " + secondsLeft + "s"
+  return verb + " " + name
 }
 
 // ---- cache -------------------------------------------------------------
