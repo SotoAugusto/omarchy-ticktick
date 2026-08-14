@@ -466,8 +466,16 @@ the panel lists dated tasks.
 
 Completing a task or checking a habit in does not fire immediately. The
 action is held for `undoSeconds`, an undo row appears, and only when the
-window lapses is anything sent. Closing the panel sends it right away —
-closing is not a cancel.
+window lapses is anything sent. Closing the panel sends everything still held
+— closing is not a cancel.
+
+Held actions are a **stack**, not a single slot. Ticking four things off in a
+row is how a list actually gets cleared, and holding only the newest would
+mean the first three were already gone by the time you noticed the mistake —
+the undo window would fail exactly where mistakes cluster. Each action keeps
+its own countdown, `u` takes back the most recent, and pressing it repeatedly
+walks back through them. The row shows how many are behind the one on offer
+(`+2 more`).
 
 It works this way because the alternative does not work. Completing a
 *recurring* task rolls it forward to its next occurrence, and a later

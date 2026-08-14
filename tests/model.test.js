@@ -618,3 +618,59 @@ test('parseQuickAdd reports whether a date was actually given', () => {
   assert.equal(Model.parseQuickAdd('Pay rent').dueGiven, false)
   assert.equal(Model.parseQuickAdd('Pay rent tomorrow').dueGiven, true)
 })
+
+// --- the held-action stack -----------------------------------------------
+
+const NOW_MS = 1_000_000
+
+function held(key, offset) {
+  return { key, kind: 'complete', title: key, args: ['complete', key], deadline: NOW_MS + offset }
+}
+
+test('expirePending splits by deadline and keeps order', () => {
+  const list = [held('a', -1), held('b', 2000), held('c', 5000)]
+  const { due, remaining } = Model.expirePending(list, NOW_MS)
+  assert.deepEqual(due.map(e => e.key), ['a'])
+  assert.deepEqual(remaining.map(e => e.key), ['b', 'c'])
+})
+
+test('several actions expiring at once come back oldest first', () => {
+  const list = [held('a', -3000), held('b', -1000), held('c', 5000)]
+  const { due } = Model.expirePending(list, NOW_MS)
+  assert.deepEqual(due.map(e => e.key), ['a', 'b'])
+})
+
+test('nothing is due before its deadline', () => {
+  assert.deepEqual(Model.expirePending([held('a', 1)], NOW_MS).due, [])
+})
+
+test('expirePending tolerates an empty or missing list', () => {
+  assert.deepEqual(Model.expirePending([], NOW_MS), { due: [], remaining: [] })
+  assert.deepEqual(Model.expirePending(null, NOW_MS), { due: [], remaining: [] })
+})
+
+test('undo targets the most recent action, not the oldest', () => {
+  const list = [held('a', 1000), held('b', 2000), held('c', 3000)]
+  assert.equal(Model.topPending(list).key, 'c')
+  assert.deepEqual(Model.dropTopPending(list).map(e => e.key), ['a', 'b'])
+})
+
+test('undoing repeatedly walks back through the stack', () => {
+  let list = [held('a', 1000), held('b', 2000), held('c', 3000)]
+  list = Model.dropTopPending(list)
+  list = Model.dropTopPending(list)
+  assert.deepEqual(list.map(e => e.key), ['a'])
+  assert.equal(Model.topPending(list).key, 'a')
+})
+
+test('an empty stack has nothing to undo', () => {
+  assert.equal(Model.topPending([]), null)
+  assert.equal(Model.topPending(null), null)
+  assert.deepEqual(Model.dropTopPending([]), [])
+})
+
+test('the label says how much is queued behind the offered undo', () => {
+  assert.equal(Model.heldSuffix(1), '')
+  assert.equal(Model.heldSuffix(2), '  +1 more')
+  assert.equal(Model.heldSuffix(4), '  +3 more')
+})

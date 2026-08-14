@@ -574,12 +574,46 @@ function undoSecondsLeft(deadlineMs, nowMs) {
   return Math.max(0, Math.ceil((deadlineMs - (nowMs || Date.now())) / 1000))
 }
 
+// Held actions are a stack, not a single slot. Ticking four things off in a
+// row is the normal way a list gets cleared, and holding only the newest
+// meant the previous three were already gone by the time anyone noticed the
+// mistake — the undo window failed exactly where mistakes cluster.
+//
+// Splitting the due ones from the rest is pure list work, so it lives here
+// where it can be tested rather than inside a timer.
+function expirePending(list, nowMs) {
+  var now = nowMs || Date.now()
+  var due = []
+  var remaining = []
+  for (var i = 0; i < (list || []).length; i++) {
+    var entry = list[i]
+    if (entry && entry.deadline <= now) due.push(entry)
+    else remaining.push(entry)
+  }
+  return { due: due, remaining: remaining }
+}
+
+// What `u` would undo: the most recent, since that is the one just done.
+function topPending(list) {
+  return (list && list.length > 0) ? list[list.length - 1] : null
+}
+
+function dropTopPending(list) {
+  return (list && list.length > 0) ? list.slice(0, list.length - 1) : []
+}
+
 // The countdown is rendered separately, so this is only the sentence part.
 function undoLabel(pending, secondsLeft) {
   if (!pending) return ""
   var name = elide(String(pending.title || ""), 26)
   var verb = pending.kind === "checkin" ? "Checked in" : "Completed"
   return verb + " " + name
+}
+
+// Says how much is waiting behind the one being offered for undo, so a stack
+// of held actions is never invisible.
+function heldSuffix(count) {
+  return count > 1 ? "  +" + (count - 1) + " more" : ""
 }
 
 // ---- cache -------------------------------------------------------------
@@ -680,6 +714,10 @@ if (typeof module !== "undefined") {
     pomoPhaseLabel: pomoPhaseLabel,
     pomoTodayLabel: pomoTodayLabel,
     undoSecondsLeft: undoSecondsLeft,
+    expirePending: expirePending,
+    topPending: topPending,
+    dropTopPending: dropTopPending,
+    heldSuffix: heldSuffix,
     undoLabel: undoLabel,
     parseCache: parseCache,
     staleMinutes: staleMinutes

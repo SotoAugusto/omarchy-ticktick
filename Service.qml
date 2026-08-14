@@ -169,42 +169,55 @@ Item {
   property var pendingAdds: []
 
   readonly property int undoSeconds: Math.max(0, parseInt(setting("undoSeconds", 6), 10) || 0)
-  property var pendingAction: null
+
+  // A stack, oldest first. Each entry keeps its own deadline, so completing
+  // several things in a row holds all of them rather than sending the earlier
+  // ones the moment the next arrives.
+  property var pendingActions: []
   property int undoTick: 0
+
+  readonly property var pendingAction: Model.topPending(pendingActions)
+  readonly property int pendingCount: pendingActions.length
   readonly property int undoLeft: pendingAction
     ? Model.undoSecondsLeft(pendingAction.deadline, Date.now() + undoTick * 0)
     : 0
 
   function scheduleAction(kind, title, args, key) {
-    flushPending()
     if (undoSeconds <= 0) {
       runAction(args)
       return
     }
-    pendingAction = {
+    pendingActions = pendingActions.concat([{
       kind: kind,
       title: title,
       args: args,
       key: key,
       deadline: Date.now() + undoSeconds * 1000
-    }
-    undoTimer.interval = undoSeconds * 1000
-    undoTimer.restart()
+    }])
   }
 
+  // Anything whose window has closed goes out, oldest first, so the account
+  // sees them in the order they were done.
+  function flushExpired() {
+    var split = Model.expirePending(pendingActions, Date.now())
+    if (split.due.length === 0) return
+    pendingActions = split.remaining
+    for (var i = 0; i < split.due.length; i++) runAction(split.due[i].args)
+  }
+
+  // Closing the panel commits everything still held, rather than dropping it.
   function flushPending() {
-    if (!pendingAction) return
-    var args = pendingAction.args
-    pendingAction = null
-    undoTimer.stop()
-    runAction(args)
+    if (pendingActions.length === 0) return
+    var held = pendingActions
+    pendingActions = []
+    for (var i = 0; i < held.length; i++) runAction(held[i].args)
   }
 
+  // Undo takes the most recent back, which is the one just done.
   function cancelPending() {
-    if (!pendingAction) return
-    var action = pendingAction
-    pendingAction = null
-    undoTimer.stop()
+    var action = Model.topPending(pendingActions)
+    if (!action) return
+    pendingActions = Model.dropTopPending(pendingActions)
     if (action.kind === "checkin") clearPendingHabit(action.key)
     else clearPendingTask(action.key)
   }
@@ -258,18 +271,17 @@ Item {
     return Model.parseQuickAdd(text)
   }
 
-  Timer {
-    id: undoTimer
-    interval: 6000
-    onTriggered: root.flushPending()
-  }
-
+  // One ticker drives both the countdown and expiry, so N held actions do not
+  // mean N timers.
   Timer {
     id: undoTicker
     interval: 250
     repeat: true
-    running: root.pendingAction !== null
-    onTriggered: root.undoTick++
+    running: root.pendingActions.length > 0
+    onTriggered: {
+      root.undoTick++
+      root.flushExpired()
+    }
   }
 
   // ---- focus timer -------------------------------------------------------

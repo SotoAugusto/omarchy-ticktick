@@ -84,6 +84,7 @@ Panel {
   readonly property var pendingHabitIds: svc ? svc.pendingHabitIds : ({})
   readonly property var pendingAdds: svc ? svc.pendingAdds : []
   readonly property var pendingAction: svc ? svc.pendingAction : null
+  readonly property int pendingCount: svc ? svc.pendingCount : 0
   readonly property int undoLeft: svc ? svc.undoLeft : 0
   readonly property int undoSeconds: svc ? svc.undoSeconds : 6
   readonly property string actionError: svc ? svc.actionError : ""
@@ -333,11 +334,13 @@ Panel {
       onMoveRequested: function(dx, dy) {
         if (dy !== 0) root.moveCursor(dy > 0 ? 1 : -1)
       }
+      // Enter emits BOTH returnRequested and activateRequested. Binding
+      // both to this acted on two rows per keypress; Space emits only
+      // activate, which makes activate the right one to listen to.
       onActivateRequested: root.activateCursor()
       // Destructive actions answer to Delete in the first-party panels, so
       // discarding a focus block does too.
       onDeleteRequested: root.stopPomo()
-      onReturnRequested: root.activateCursor()
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(text) {
         if (text === "?") root.helpVisible = !root.helpVisible
@@ -588,12 +591,25 @@ Panel {
                 anchors.verticalCenter: parent.verticalCenter
                 // Only the title elides; the countdown is the point of the
                 // row and must never be the part that gets cut.
-                width: parent.width - Style.space(30) - undoCount.implicitWidth
+                // Only the title may be cut. The depth and the countdown are
+                // the two facts a held action has to convey, so neither shares
+                // an eliding label with it.
+                width: parent.width - Style.space(30)
+                  - undoCount.implicitWidth - undoDepth.implicitWidth
                 elide: Text.ElideRight
                 text: Model.undoLabel(root.pendingAction, root.undoLeft)
                 color: root.fg
                 font.family: Style.font.family
                 font.pixelSize: Style.font.bodySmall
+              }
+
+              Text {
+                id: undoDepth
+                anchors.verticalCenter: parent.verticalCenter
+                text: Model.heldSuffix(root.pendingCount)
+                color: root.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
               }
 
               Text {
