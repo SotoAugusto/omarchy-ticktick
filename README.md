@@ -40,7 +40,7 @@ No external Python packages, no build step, and nothing is compiled.
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/<you>/omarchy-ticktick.git --enable
+omarchy plugin add https://github.com/SotoAugusto/omarchy-ticktick.git --enable
 ```
 
 Then click the widget in the bar. It shows a plug icon until it is
