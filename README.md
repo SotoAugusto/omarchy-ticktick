@@ -1,8 +1,8 @@
 # TickTick for Omarchy
 
-**What's due and what you haven't done yet, in the Omarchy bar.** Tasks and
-habits in one popup, with the two actions that belong on a bar: tick a task
-off, check a habit in.
+**What's due and what you haven't done yet, in the Omarchy bar.** Tasks,
+habits and a focus timer in one popup — add, edit and complete without
+leaving the desktop.
 
 ![The TickTick panel: tasks with tag colours, habits with a streak, and a focus timer](preview.png)
 

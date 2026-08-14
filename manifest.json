@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "id": "io.github.sotoaugusto.ticktick",
   "name": "TickTick",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "Augusto Soto",
-  "description": "Today's TickTick tasks and habits in the bar, with one-click complete and check-in",
+  "description": "TickTick tasks, habits and a focus timer in your bar — add, edit and complete without leaving the desktop",
   "kinds": [
     "bar-widget",
     "service"
@@ -15,7 +15,7 @@
   },
   "barWidget": {
     "displayName": "TickTick",
-    "description": "Tasks due today and habit check-ins, from the bar",
+    "description": "What is due today, habit check-ins, and a focus timer",
     "category": "Info",
     "allowMultiple": false,
     "defaultSection": "right",
