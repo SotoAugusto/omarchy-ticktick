@@ -47,6 +47,17 @@ BarWidget {
     ? "setup"
     : (pomoActive ? pomoClock : panelLabel)
 
+  // In "Next" mode the label is a task title, which is as long as someone
+  // felt like typing. The bar scrolls it rather than cutting it off, the same
+  // way the first-party media widget scrolls a track name — and, like that
+  // widget, only in the bar. The panel's rows still elide, because seven
+  // scrolling lines cannot be scanned.
+  readonly property string barLabelMode: setting("barLabel", "Count")
+  readonly property string nextTitle: panelLoader.item ? panelLoader.item.nextTitle : ""
+  readonly property bool marquee: !vertical && !pomoActive && signedIn
+    && barLabelMode === "Next" && nextTitle !== ""
+  readonly property real marqueeWidth: Style.space(150)
+
   readonly property string displayText: activeLabel === "" ? activeIcon : activeIcon + "  " + activeLabel
   readonly property var verticalLines: activeLabel === "" ? [activeIcon] : [activeIcon, activeLabel]
 
@@ -140,9 +151,15 @@ BarWidget {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: root.vertical ? "" : root.displayText
+    text: (root.vertical || root.marquee) ? "" : root.displayText
+    fixedWidth: root.marquee ? root.marqueeWidth + Style.space(30) : -1
     labelVisible: !root.vertical
-    hasVisualContent: root.vertical ? root.verticalLines.length > 0 : text !== ""
+    // The marquee draws its own children, so the slot has content even though
+    // the button's own text is empty. Without this the bar treats it as blank
+    // and the widget disappears.
+    hasVisualContent: root.marquee
+      ? true
+      : (root.vertical ? root.verticalLines.length > 0 : text !== "")
     fixedHeight: root.vertical ? root.verticalLines.length * Style.bar.iconSlot : -1
 
     // Late work is the one state worth spending the bar's urgent color on.
@@ -158,6 +175,52 @@ BarWidget {
       if (b === Qt.MiddleButton) root.refresh()
       else if (b === Qt.RightButton) { if (root.bar) root.bar.run("xdg-open https://ticktick.com/webapp") }
       else root.togglePanel()
+    }
+
+    // Scrolling label. Held to one clip so the glyph stays put and only the
+    // title moves.
+    Row {
+      visible: root.marquee
+      anchors.centerIn: parent
+      spacing: Style.space(8)
+
+      Text {
+        anchors.verticalCenter: parent.verticalCenter
+        text: root.activeIcon
+        color: button.foreground
+        font.family: button.fontFamily
+        font.pixelSize: button.fontSize
+      }
+
+      Item {
+        id: scrollClip
+        width: Math.min(root.marqueeWidth, marqueeText.implicitWidth)
+        height: button.height
+        clip: true
+        anchors.verticalCenter: parent.verticalCenter
+
+        Text {
+          id: marqueeText
+          text: root.nextTitle
+          color: button.foreground
+          font.family: button.fontFamily
+          font.pixelSize: button.fontSize
+          anchors.verticalCenter: parent.verticalCenter
+
+          readonly property bool needsScroll: implicitWidth > scrollClip.width
+
+          NumberAnimation on x {
+            running: marqueeText.needsScroll && !root.opened
+            loops: Animation.Infinite
+            // Long titles take proportionally longer, so the reading speed
+            // stays constant rather than the loop time.
+            duration: Math.max(6000, marqueeText.implicitWidth * 25)
+            from: scrollClip.width
+            to: -marqueeText.implicitWidth
+            easing.type: Easing.Linear
+          }
+        }
+      }
     }
 
     Column {

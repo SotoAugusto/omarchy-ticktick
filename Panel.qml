@@ -233,6 +233,7 @@ Panel {
   readonly property int habitsRemaining: Model.habitsRemaining(habits, cache.checkins, todayStamp)
 
   // What the bar reads off this panel.
+  readonly property string nextTitle: Model.nextTaskTitle(visibleTasks)
   readonly property string label: Model.barLabel(setting("barLabel", "Count"), visibleTasks, habitsRemaining, nowDate)
   readonly property bool hasWork: visibleTasks.length > 0 || habitsRemaining > 0
 

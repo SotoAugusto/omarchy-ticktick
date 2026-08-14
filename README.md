@@ -202,7 +202,7 @@ Configure in Setup > Plugins, or inline on the bar entry in
 | `showTasks` | `true` | Show the task section. |
 | `showHabits` | `true` | Show the habit section. |
 | `maxTasks` | `12` | Rows before the list is capped with a "+N more". |
-| `barLabel` | `Count` | `Count`, `Next` (next task's title), or `Icon`. |
+| `barLabel` | `Count` | `Count`, `Next` (next task's title, scrolling), or `Icon`. |
 | `showPomo` | `true` | Focus section, and a live countdown in the bar. |
 | `undoSeconds` | `6` | How long an action is held before sending. `0` disables undo. |
 | `pomoMinutes` | `0` | Focus length. `0` follows your TickTick account. |
@@ -427,6 +427,19 @@ But a task you just created must never be invisible, so:
 
 Widening is a look, not a setting. Closing the panel returns it to your
 configured `horizon`, so the default never drifts.
+
+## Long titles
+
+Panel rows **truncate** — one line, elided on the right. They do not wrap and
+they do not scroll: seven scrolling lines cannot be scanned, and a bar popup
+is for scanning.
+
+The bar is the exception. With `barLabel` set to `Next` the label is somebody's
+task title, which is as long as they felt like typing, so it **scrolls**
+instead of being cut off. The speed is proportional to length, so reading pace
+stays constant, and it stops while the panel is open. This mirrors the
+first-party media widget, which scrolls a track name in the bar and elides in
+its own popup.
 
 ## Colours
 

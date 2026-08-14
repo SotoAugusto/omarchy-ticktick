@@ -179,6 +179,11 @@ function dueTasks(tasks, options) {
   return result
 }
 
+function nextTaskTitle(tasks) {
+  var next = nextTask(tasks)
+  return next ? String(next.title || "") : ""
+}
+
 function nextTask(tasks) {
   return (tasks && tasks.length > 0) ? tasks[0] : null
 }
@@ -644,6 +649,7 @@ if (typeof module !== "undefined") {
     isOverdue: isOverdue,
     dueTasks: dueTasks,
     nextTask: nextTask,
+    nextTaskTitle: nextTaskTitle,
     dueLabel: dueLabel,
     priorityRank: priorityRank,
     tagIndex: tagIndex,
