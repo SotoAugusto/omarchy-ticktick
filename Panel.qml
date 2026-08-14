@@ -196,6 +196,20 @@ Panel {
     return rows
   }
 
+  // First and last are destinations, not big steps. Expressed as a delta they
+  // went through moveCursor's "nothing selected yet" branch, where a negative
+  // delta means "start from the end" — so `g` jumped to the last row whenever
+  // the panel had just been opened.
+  function cursorToFirst() {
+    cursorActive = true
+    cursor = navRows.length > 0 ? 0 : -1
+  }
+
+  function cursorToLast() {
+    cursorActive = true
+    cursor = navRows.length - 1
+  }
+
   function moveCursor(delta) {
     cursorActive = true
     var count = navRows.length
@@ -339,8 +353,8 @@ Panel {
         else if (text === "d") root.stopPomo()
         else if (text === "v") root.cycleView(1)
         else if (text === "V") root.cycleView(-1)
-        else if (text === "g") root.moveCursor(-root.navRows.length)
-        else if (text === "G") root.moveCursor(root.navRows.length)
+        else if (text === "g") root.cursorToFirst()
+        else if (text === "G") root.cursorToLast()
       }
 
       Flickable {
