@@ -508,6 +508,11 @@ Stopping a block early does **not** log it: TickTick counts a pomodoro on
 completion, and banking partial blocks would inflate the statistics this is
 meant to keep honest.
 
+## Changes
+
+[CHANGELOG.md](CHANGELOG.md) — note that `0.2.0` renames the
+`refreshIntervalSec` setting to `syncInterval`.
+
 ## Licence and acknowledgements
 
 MIT — see [LICENSE](LICENSE).
