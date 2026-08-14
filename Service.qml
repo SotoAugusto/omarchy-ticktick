@@ -243,6 +243,13 @@ Item {
     scheduleAction("checkin", habit.name, ["checkin", String(habit.id), "--toggle"], String(habit.id))
   }
 
+  function submitEdit(taskId, text) {
+    var args = Model.editArgs(taskId, text)
+    if (!args) return false
+    runAction(args)
+    return true
+  }
+
   function submitQuickAdd(text) {
     var args = Model.quickAddArgs(text)
     if (!args) return null

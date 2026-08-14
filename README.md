@@ -12,6 +12,7 @@ turns urgent when something is late. Left click opens the panel.
 ## Features
 
 - Tasks due today, tomorrow, or the next seven days, overdue ones first
+- Edit a task in place — `e` fills the add field with the task's own line
 - Completing a task or checking a habit in is a click on its circle — the
   row itself is not a hit target, so a stray click costs nothing
 - Habits with today's state and a running streak

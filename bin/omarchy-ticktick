@@ -506,6 +506,12 @@ def apply_locally(kind: str, payload: dict) -> None:
                 task["status"] = target
                 break
 
+    elif kind == "update":
+        for i, task in enumerate(cache.get("tasks", [])):
+            if task.get("id") == payload["taskId"]:
+                cache["tasks"][i] = apply_edit(task, payload["fields"])
+                break
+
     elif kind == "checkin":
         entry = payload["entry"]
         habit_id = entry["habitId"]
@@ -549,6 +555,10 @@ def replay(entry: dict, session: dict) -> None:
         else:
             task.pop("completedTime", None)
         batch_task(session, update=[task])
+
+    elif kind == "update":
+        task = find_task(payload["taskId"], session)
+        batch_task(session, update=[apply_edit(task, payload["fields"])])
 
     elif kind == "checkin":
         entry_payload = dict(payload["entry"])
@@ -885,6 +895,49 @@ def set_task_status(task_id: str, status: int) -> dict:
             {"taskId": task_id, "completedTime": now_api_time()},
             str(error),
         )
+        holder["task"] = {"id": task_id, "queued": True}
+    return holder["task"]
+
+
+def apply_edit(task: dict, fields: dict) -> dict:
+    """Overlay an edit onto a task. Absent keys are left alone.
+
+    An empty tag list or a zero priority are edits, not omissions — clearing
+    them is how the panel removes a tag or a flag — so the caller decides what
+    to send rather than this guessing from falsiness.
+    """
+    edited = dict(task)
+    if "title" in fields:
+        edited["title"] = fields["title"]
+    if "priority" in fields:
+        edited["priority"] = int(fields["priority"] or 0)
+    if "tags" in fields:
+        edited["tags"] = [str(t).strip().lower() for t in (fields["tags"] or []) if str(t).strip()]
+    if "due" in fields:
+        edited["dueDate"] = parse_due_argument(fields["due"])
+        edited["startDate"] = edited["dueDate"]
+        edited["isAllDay"] = True
+    edited["modifiedTime"] = now_api_time()
+    return edited
+
+
+def update_task(task_id: str, fields: dict) -> dict:
+    holder = {}
+
+    def call(session):
+        edited = apply_edit(find_task(task_id, session), fields)
+        holder["task"] = edited
+        return batch_task(session, update=[edited])
+
+    try:
+        with_reauth(call)
+    except TickTickError as error:
+        if not error.transient:
+            raise
+        # Queued as the edit itself, not as the finished object: replaying it
+        # re-fetches the task, so a change made elsewhere in the meantime
+        # survives everything this edit did not touch.
+        queue_write("update", {"taskId": task_id, "fields": fields}, str(error))
         holder["task"] = {"id": task_id, "queued": True}
     return holder["task"]
 
@@ -1260,6 +1313,27 @@ def cmd_complete(args) -> int:
     return 0
 
 
+def cmd_update(args) -> int:
+    fields = {}
+    if args.title is not None:
+        fields["title"] = args.title
+    if args.priority is not None:
+        fields["priority"] = args.priority
+    if args.tags is not None:
+        fields["tags"] = [t for t in args.tags.split(",") if t.strip()]
+    if args.due is not None:
+        fields["due"] = args.due
+    if not fields:
+        raise TickTickError("Nothing to update; pass --title, --due, --priority or --tags")
+
+    task = update_task(args.task_id, fields)
+    if task.get("queued"):
+        return queued_result({"updated": task["id"]})
+    sync_after_write(args, "tasks")
+    print(json.dumps({"ok": True, "updated": task["id"], "title": task.get("title")}))
+    return 0
+
+
 def cmd_delete(args) -> int:
     delete_task(args.task_id)
     sync_after_write(args, "tasks")
@@ -1377,6 +1451,14 @@ def build_parser() -> argparse.ArgumentParser:
     complete = sub.add_parser("complete", help="mark a task done")
     complete.add_argument("task_id")
     complete.set_defaults(func=cmd_complete)
+
+    edit = sub.add_parser("update", help="edit a task in place")
+    edit.add_argument("task_id")
+    edit.add_argument("--title")
+    edit.add_argument("--due", help="today, tomorrow, yesterday, or YYYY-MM-DD")
+    edit.add_argument("--priority", type=int, choices=(0, 1, 3, 5))
+    edit.add_argument("--tags", help="comma-separated; an empty value clears them")
+    edit.set_defaults(func=cmd_update)
 
     remove = sub.add_parser("delete", help="delete a task outright")
     remove.add_argument("task_id")

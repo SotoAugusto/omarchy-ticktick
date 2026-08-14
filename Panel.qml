@@ -117,10 +117,42 @@ Panel {
     tokenPaste.text = ""
   }
 
+  // Editing reuses the add field rather than introducing an editor. The row
+  // is rendered back into the same grammar you would have typed, so there is
+  // one input and one syntax to know.
+  property string editingTaskId: ""
+
+  function beginEdit() {
+    if (cursor < 0 || cursor >= navRows.length) return
+    var row = navRows[cursor]
+    if (row.section !== "task") return
+    var task = displayTasks[row.index]
+    if (!task || !task.id) return
+    editingTaskId = String(task.id)
+    quickAdd.text = Model.editLineFor(task)
+    quickAdd.forceActiveFocus()
+    quickAdd.selectAll()
+  }
+
+  function cancelEdit() {
+    editingTaskId = ""
+    quickAdd.text = ""
+    keyCatcher.forceActiveFocus()
+  }
+
   function submitQuickAdd() {
     if (!svc) return
     var text = String(quickAdd.text || "").trim()
     if (text === "") return
+
+    if (editingTaskId !== "") {
+      var id = editingTaskId
+      editingTaskId = ""
+      quickAdd.text = ""
+      svc.submitEdit(id, text)
+      return
+    }
+
     quickAdd.text = ""
     var parsed = svc.submitQuickAdd(text)
     // Adding something due later must not file it out of sight, so the view
@@ -289,6 +321,7 @@ Panel {
         if (text === "?") root.helpVisible = !root.helpVisible
         else if (text === "r") root.refresh()
         else if (text === "a") quickAdd.forceActiveFocus()
+        else if (text === "e") root.beginEdit()
         else if (text === "u") root.cancelPending()
         else if (text === "p") {
           if (root.pomoRunning) root.pausePomo()
@@ -468,6 +501,7 @@ Panel {
                 { key: "enter", what: "complete task / check habit in" },
                 { key: "u", what: "undo the held action" },
                 { key: "a", what: "add a task" },
+                { key: "e", what: "edit the selected task in the field" },
                 { key: "#tag", what: "tag it — # is TickTick's own" },
                 { key: "!1 !2 !3", what: "priority: high, medium, low" },
                 { key: "tomorrow", what: "a trailing date word sets the due date" },
@@ -626,15 +660,14 @@ Panel {
             id: quickAdd
             width: parent.width
             visible: root.signedIn && root.showTasks
-            placeholderText: "Add a task…  #tag  !1  tomorrow"
+            placeholderText: root.editingTaskId !== ""
+              ? "Editing — enter to save, esc to cancel"
+              : "Add a task…  #tag  !1  tomorrow"
             foreground: root.fg
             font.family: Style.font.family
             font.pixelSize: Style.font.bodySmall
             onAccepted: root.submitQuickAdd()
-            Keys.onEscapePressed: {
-              text = ""
-              keyCatcher.forceActiveFocus()
-            }
+            Keys.onEscapePressed: root.cancelEdit()
           }
 
           // ---- tasks

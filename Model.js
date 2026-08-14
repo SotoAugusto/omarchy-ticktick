@@ -299,6 +299,7 @@ function parseQuickAdd(text) {
   var tags = []
   var priority = 0
   var due = "today"
+  var dueGiven = false
 
   rest = rest.replace(/(^|\s)#([^\s#]+)/g, function(match, lead, tag) {
     tags.push(String(tag).toLowerCase())
@@ -319,6 +320,7 @@ function parseQuickAdd(text) {
   var dateMatch = rest.match(/\s(?:for\s+|on\s+|due\s+|by\s+)?(today|tomorrow|yesterday|\d{4}-\d{2}-\d{2})\s*$/i)
   if (dateMatch) {
     due = dateMatch[1].toLowerCase()
+    dueGiven = true
     rest = rest.slice(0, dateMatch.index)
   }
 
@@ -326,8 +328,52 @@ function parseQuickAdd(text) {
     title: rest.replace(/\s+/g, " ").trim(),
     tags: tags,
     priority: priority,
-    due: due
+    due: due,
+    dueGiven: dueGiven
   }
+}
+
+// The inverse: render a task back into the line that would have produced it,
+// so editing is the same grammar as adding rather than a second syntax to
+// learn.
+function editLineFor(task, index) {
+  if (!task) return ""
+  var parts = [String(task.title || "")]
+
+  var names = (task.tags || [])
+  for (var i = 0; i < names.length; i++) parts.push("#" + String(names[i]))
+
+  var rank = priorityRank(task)
+  if (rank === "high") parts.push("!1")
+  else if (rank === "medium") parts.push("!2")
+  else if (rank === "low") parts.push("!3")
+
+  var due = taskDueDate(task)
+  if (due) {
+    var delta = Math.round((startOfDay(due).getTime() - startOfDay(new Date()).getTime()) / 86400000)
+    if (delta === 0) parts.push("today")
+    else if (delta === 1) parts.push("tomorrow")
+    else if (delta === -1) parts.push("yesterday")
+    else parts.push(due.getFullYear() + "-" + pad2(due.getMonth() + 1) + "-" + pad2(due.getDate()))
+  }
+
+  return parts.join(" ")
+}
+
+// What the line means as an edit. Tags and priority are always sent, because
+// deleting "#work" from the line is how a tag is removed; the date is only
+// sent when one is present, so an undated task stays undated.
+function editArgs(taskId, text) {
+  var parsed = parseQuickAdd(text)
+  if (parsed.title === "") return null
+  var args = [
+    "update", String(taskId),
+    "--title", parsed.title,
+    "--priority", String(parsed.priority),
+    "--tags", parsed.tags.join(",")
+  ]
+  if (parsed.dueGiven) args = args.concat(["--due", parsed.due])
+  return args
 }
 
 function quickAddArgs(text) {
@@ -609,6 +655,8 @@ if (typeof module !== "undefined") {
     syncIntervalLabels: syncIntervalLabels,
     parseQuickAdd: parseQuickAdd,
     quickAddArgs: quickAddArgs,
+    editLineFor: editLineFor,
+    editArgs: editArgs,
     projectName: projectName,
     checkinFor: checkinFor,
     habitProgress: habitProgress,

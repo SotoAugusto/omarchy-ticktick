@@ -410,7 +410,7 @@ test('parseCache defaults tags to an empty list', () => {
 
 test('a bare title is due today with no tags or priority', () => {
   assert.deepEqual(Model.parseQuickAdd('Pay rent'),
-    { title: 'Pay rent', tags: [], priority: 0, due: 'today' })
+    { title: 'Pay rent', tags: [], priority: 0, due: 'today', dueGiven: false })
 })
 
 test('# attaches tags and strips them from the title', () => {
@@ -440,7 +440,7 @@ test('an unrecognised ! token is left in the title', () => {
 
 test('a trailing date word sets the due date and leaves', () => {
   assert.deepEqual(Model.parseQuickAdd('Ship it tomorrow'),
-    { title: 'Ship it', tags: [], priority: 0, due: 'tomorrow' })
+    { title: 'Ship it', tags: [], priority: 0, due: 'tomorrow', dueGiven: true })
   assert.equal(Model.parseQuickAdd('Review 2026-09-01').due, '2026-09-01')
 })
 
@@ -563,4 +563,60 @@ test('every offered label resolves, so the picker cannot produce a dud', () => {
     assert.equal(typeof seconds, 'number')
     assert.ok(seconds === 0 || seconds >= 120, `${label} -> ${seconds}`)
   }
+})
+
+// --- editing -------------------------------------------------------------
+
+function localAllDay(offsetDays) {
+  const d = new Date()
+  d.setDate(d.getDate() + offsetDays)
+  const p = n => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T00:00:00.000+0000`
+}
+
+test('a task renders back into the grammar that would have made it', () => {
+  const t = { title: 'Renew the cert', tags: ['work', 'ops'], priority: 5, isAllDay: true, dueDate: localAllDay(1) }
+  assert.equal(Model.editLineFor(t), 'Renew the cert #work #ops !1 tomorrow')
+})
+
+test('the edit line round-trips through the add parser', () => {
+  const t = { title: 'Renew the cert', tags: ['work'], priority: 3, isAllDay: true, dueDate: localAllDay(0) }
+  const parsed = Model.parseQuickAdd(Model.editLineFor(t))
+  assert.equal(parsed.title, 'Renew the cert')
+  assert.deepEqual(parsed.tags, ['work'])
+  assert.equal(parsed.priority, 3)
+  assert.equal(parsed.due, 'today')
+})
+
+test('a task with nothing set renders as a bare title', () => {
+  assert.equal(Model.editLineFor({ title: 'Someday thing', tags: [], priority: 0 }), 'Someday thing')
+})
+
+test('a far-off date falls back to an ISO date rather than a word', () => {
+  const line = Model.editLineFor({ title: 'x', tags: [], priority: 0, isAllDay: true, dueDate: localAllDay(9) })
+  assert.match(line, /^x \d{4}-\d{2}-\d{2}$/)
+})
+
+test('editLineFor tolerates a missing task', () => {
+  assert.equal(Model.editLineFor(null), '')
+})
+
+test('editArgs always sends tags and priority, so clearing them works', () => {
+  const args = Model.editArgs('id1', 'Just a title')
+  assert.deepEqual(args, ['update', 'id1', '--title', 'Just a title', '--priority', '0', '--tags', ''])
+})
+
+test('editArgs sends a date only when one was typed', () => {
+  assert.ok(!Model.editArgs('id1', 'No date here').includes('--due'))
+  assert.ok(Model.editArgs('id1', 'Has one tomorrow').includes('--due'))
+})
+
+test('editArgs refuses a line with no title left', () => {
+  assert.equal(Model.editArgs('id1', '#work !1'), null)
+  assert.equal(Model.editArgs('id1', '   '), null)
+})
+
+test('parseQuickAdd reports whether a date was actually given', () => {
+  assert.equal(Model.parseQuickAdd('Pay rent').dueGiven, false)
+  assert.equal(Model.parseQuickAdd('Pay rent tomorrow').dueGiven, true)
 })
