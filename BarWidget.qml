@@ -209,15 +209,28 @@ BarWidget {
 
           readonly property bool needsScroll: implicitWidth > scrollClip.width
 
-          NumberAnimation on x {
+          // Scroll to the end, wait, come back — the same motion the panel
+          // rows use. A continuous wrap, as the media widget does it, sends
+          // the title off one edge and back in the other, which leaves the
+          // bar slot looking empty for part of every loop. A track name can
+          // afford that; a task you are being reminded of cannot.
+          onNeedsScrollChanged: if (!needsScroll) x = 0
+
+          SequentialAnimation on x {
             running: marqueeText.needsScroll && !root.opened
             loops: Animation.Infinite
-            // Long titles take proportionally longer, so the reading speed
-            // stays constant rather than the loop time.
-            duration: Math.max(6000, marqueeText.implicitWidth * 25)
-            from: scrollClip.width
-            to: -marqueeText.implicitWidth
-            easing.type: Easing.Linear
+
+            PauseAnimation { duration: 2000 }
+            NumberAnimation {
+              from: 0
+              to: Math.min(0, scrollClip.width - marqueeText.implicitWidth)
+              // Constant reading speed: a longer title takes longer rather
+              // than moving faster.
+              duration: Math.max(900, (marqueeText.implicitWidth - scrollClip.width) * 28)
+              easing.type: Easing.Linear
+            }
+            PauseAnimation { duration: 1600 }
+            NumberAnimation { to: 0; duration: 400; easing.type: Easing.OutCubic }
           }
         }
       }

@@ -439,10 +439,17 @@ be scanned, and scanning is what the list is for. Nothing scrolls until you
 show interest in a specific row, and a row that stops mid-scroll returns home
 rather than sitting half off the edge.
 
-The bar gets the same treatment in `Next` mode, where the label is a task
-title: it scrolls rather than being cut at 28 characters. Reading speed is
-constant in both places, so a longer title takes longer instead of moving
+The bar behaves the same way in `Next` mode, where the label is a task title:
+it scrolls rather than being cut at 28 characters, and pauses at each end
+instead of wrapping around. A continuous wrap — the way the media widget
+scrolls a track name — leaves the bar slot looking empty for part of every
+loop, which a track name can afford and a task reminder cannot. Reading speed
+is constant in both places, so a longer title takes longer rather than moving
 faster.
+
+The slot keeps a fixed width in `Next` mode. A bar item that resized with
+every task title would shove its neighbours sideways each time you completed
+something.
 
 ## Colours
 
