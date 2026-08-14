@@ -61,6 +61,23 @@ BarWidget {
   readonly property string displayText: activeLabel === "" ? activeIcon : activeIcon + "  " + activeLabel
   readonly property var verticalLines: activeLabel === "" ? [activeIcon] : [activeIcon, activeLabel]
 
+  // Right-click cycles what the bar shows, which is how the built-in clock and
+  // the calendar plugin let you change their label. Writing it back through
+  // the shell means the choice survives a restart instead of being a mode you
+  // have to re-pick every session.
+  function cycleBarLabel() {
+    var next = Model.cycleBarLabel(barLabelMode)
+    var entry = { id: root.moduleName }
+    for (var key in root.settings) if (key !== "id") entry[key] = root.settings[key]
+    entry.barLabel = next
+
+    // Applied locally first so the bar changes on the click itself; the
+    // persisted write comes back through the bar as the same value.
+    root.settings = entry
+    if (root.bar && root.bar.shell && typeof root.bar.shell.updateEntryInline === "function")
+      root.bar.shell.updateEntryInline(root.moduleName, entry)
+  }
+
   function injectPanel() {
     var target = panelLoader.item
     if (!target) return
@@ -134,6 +151,10 @@ BarWidget {
     // Refresh is not a place, so it goes to every instance.
     function sync(): void { root.broadcast("refresh") }
 
+    // Same switch as the right-click, for a keybinding. Routed to the focused
+    // instance so the write happens once rather than once per monitor.
+    function cycleLabel(): void { root.focusedInstance().cycleBarLabel() }
+
     // The focus clock lives in the service, so these are not per-monitor and
     // need no routing. Bindable: `omarchy-shell <id> focus` starts or pauses
     // a block without opening anything.
@@ -169,11 +190,15 @@ BarWidget {
 
     tooltipText: root.signedIn
       ? (root.hasWork ? "TickTick — click to review" : "TickTick — all clear")
+        + "\nright click for " + Model.barLabelDescription(Model.cycleBarLabel(root.barLabelMode))
       : "TickTick — click to connect"
 
     onPressed: function(b) {
       if (b === Qt.MiddleButton) root.refresh()
-      else if (b === Qt.RightButton) { if (root.bar) root.bar.run("xdg-open https://ticktick.com/webapp") }
+      // Opening the web app moved into the panel's "Open in TickTick" row,
+      // which frees the bar's right-click for the thing you would actually
+      // want to change from the bar.
+      else if (b === Qt.RightButton) root.cycleBarLabel()
       else root.togglePanel()
     }
 

@@ -468,6 +468,20 @@ function habitsRemaining(habits, checkins, stamp) {
 
 // ---- bar label ---------------------------------------------------------
 
+var BAR_LABEL_MODES = ["Count", "Next", "Icon"]
+
+function cycleBarLabel(current) {
+  var i = BAR_LABEL_MODES.indexOf(String(current))
+  if (i < 0) i = 0
+  return BAR_LABEL_MODES[(i + 1) % BAR_LABEL_MODES.length]
+}
+
+function barLabelDescription(mode) {
+  if (mode === "Next") return "next task"
+  if (mode === "Icon") return "icon only"
+  return "counts"
+}
+
 function barLabel(mode, tasks, habitsLeft, now) {
   if (mode === "Icon") return ""
 
@@ -705,6 +719,8 @@ if (typeof module !== "undefined") {
     habitLabel: habitLabel,
     habitsRemaining: habitsRemaining,
     barLabel: barLabel,
+    cycleBarLabel: cycleBarLabel,
+    barLabelDescription: barLabelDescription,
     elide: elide,
     overdueCount: overdueCount,
     formatClock: formatClock,

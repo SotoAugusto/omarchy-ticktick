@@ -674,3 +674,22 @@ test('the label says how much is queued behind the offered undo', () => {
   assert.equal(Model.heldSuffix(2), '  +1 more')
   assert.equal(Model.heldSuffix(4), '  +3 more')
 })
+
+// --- bar label switching -------------------------------------------------
+
+test('the bar label cycles through its three modes and wraps', () => {
+  assert.equal(Model.cycleBarLabel('Count'), 'Next')
+  assert.equal(Model.cycleBarLabel('Next'), 'Icon')
+  assert.equal(Model.cycleBarLabel('Icon'), 'Count')
+})
+
+test('an unknown mode recovers rather than sticking', () => {
+  assert.equal(Model.cycleBarLabel('nonsense'), 'Next')
+  assert.equal(Model.cycleBarLabel(undefined), 'Next')
+})
+
+test('each mode has a short description for the tooltip', () => {
+  assert.equal(Model.barLabelDescription('Count'), 'counts')
+  assert.equal(Model.barLabelDescription('Next'), 'next task')
+  assert.equal(Model.barLabelDescription('Icon'), 'icon only')
+})

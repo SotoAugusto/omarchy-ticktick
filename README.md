@@ -202,7 +202,7 @@ Configure in Setup > Plugins, or inline on the bar entry in
 | `showTasks` | `true` | Show the task section. |
 | `showHabits` | `true` | Show the habit section. |
 | `maxTasks` | `12` | Rows before the list is capped with a "+N more". |
-| `barLabel` | `Count` | `Count`, `Next` (next task's title, scrolling), or `Icon`. |
+| `barLabel` | `Count` | `Count`, `Next` (next task's title, scrolling), or `Icon`. Right-click the widget to cycle it. |
 | `showPomo` | `true` | Focus section, and a live countdown in the bar. |
 | `undoSeconds` | `6` | How long an action is held before sending. `0` disables undo. |
 | `pomoMinutes` | `0` | Focus length. `0` follows your TickTick account. |
@@ -228,7 +228,7 @@ Configure in Setup > Plugins, or inline on the bar entry in
 |---|---|---|
 | Bar | left | open the panel |
 | Bar | middle | sync now |
-| Bar | right | open the TickTick web app |
+| Bar | right | cycle the label: counts → next task → icon only |
 | Panel | click the circle | complete the task / check the habit in |
 | Panel | click the title | cycle the range (Today → Tomorrow → 7 days) |
 | Panel | `Open in TickTick ›` | open the web app and close the panel |
@@ -257,6 +257,7 @@ omarchy-shell io.github.sotoaugusto.ticktick toggle
 omarchy-shell io.github.sotoaugusto.ticktick sync
 omarchy-shell io.github.sotoaugusto.ticktick focus       # start or pause a block
 omarchy-shell io.github.sotoaugusto.ticktick focusStop   # discard it
+omarchy-shell io.github.sotoaugusto.ticktick cycleLabel   # counts / next task / icon
 ```
 
 `toggle`, `open`, `close`, `show`, and `hide` open the panel on the monitor
