@@ -227,6 +227,8 @@ Configure in Setup > Plugins, or inline on the bar entry in
 | Bar | left | open the panel |
 | Bar | middle | sync now |
 | Bar | right | open the TickTick web app |
+| Panel | click the circle | complete the task / check the habit in |
+| Panel | click the title | cycle the range (Today → Tomorrow → 7 days) |
 | Panel | `↑` `↓` | move between tasks and habits |
 | Panel | `enter` | complete the task / check the habit in |
 | Panel | `u` | undo the held action |
@@ -463,6 +465,18 @@ While a block runs the bar shows the countdown instead of the task count.
 Stopping a block early does **not** log it: TickTick counts a pomodoro on
 completion, and banking partial blocks would inflate the statistics this is
 meant to keep honest.
+
+## Licence and acknowledgements
+
+MIT — see [LICENSE](LICENSE).
+
+Built on Omarchy and Quickshell, and it speaks TickTick's private v2 API,
+which several other projects mapped out first. Who contributed what, and what
+this plugin owes them, is in
+[ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md).
+
+Unofficial and unaffiliated: not endorsed by or supported by TickTick
+(Appest Inc.). Please do not report breakage here to them.
 
 ## Limitations
 
