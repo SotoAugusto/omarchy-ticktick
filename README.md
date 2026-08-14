@@ -229,6 +229,7 @@ Configure in Setup > Plugins, or inline on the bar entry in
 | Bar | right | open the TickTick web app |
 | Panel | click the circle | complete the task / check the habit in |
 | Panel | click the title | cycle the range (Today → Tomorrow → 7 days) |
+| Panel | `Open in TickTick ›` | open the web app and close the panel |
 | Panel | `↑` `↓` | move between tasks and habits |
 | Panel | `enter` | complete the task / check the habit in |
 | Panel | `u` | undo the held action |

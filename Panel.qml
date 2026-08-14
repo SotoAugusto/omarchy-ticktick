@@ -645,11 +645,25 @@ Panel {
 
             PanelSeparator { width: parent.width; foreground: root.fg }
 
-            PanelSectionHeader {
-              text: root.overdueCount > 0
-                ? "TASKS · " + root.overdueCount + " LATE"
-                : "TASKS"
-              foreground: root.fg
+            Item {
+              width: parent.width
+              height: sectionLabel_tasks.implicitHeight
+
+              PanelSectionHeader {
+                id: sectionLabel_tasks
+                anchors.left: parent.left
+                text: "TASKS"
+                foreground: root.fg
+              }
+
+              PanelSectionHeader {
+                anchors.right: parent.right
+                anchors.baseline: sectionLabel_tasks.baseline
+                text: root.overdueCount > 0
+                  ? root.overdueCount + " LATE"
+                  : String(root.visibleTasks.length)
+                foreground: root.overdueCount > 0 ? Color.accent : root.muted
+              }
             }
 
             Text {
@@ -679,8 +693,13 @@ Panel {
                 height: Style.space(26)
                 radius: Style.space(4)
                 color: (taskHover.containsMouse || taskRow.selected)
-                  ? Qt.rgba(root.fg.r, root.fg.g, root.fg.b, taskRow.selected ? 0.14 : 0.08)
+                  ? Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.08)
                   : "transparent"
+                // Hover tints, the keyboard cursor outlines. Two different
+                // states deserve two different marks, not two strengths of
+                // the same one.
+                border.width: taskRow.selected ? 1 : 0
+                border.color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.55)
 
                 // Row-wide hover for the highlight only. It deliberately
                 // accepts no buttons: completion is irreversible from here,
@@ -730,9 +749,14 @@ Panel {
                   }
 
                   // The task's own tag colour, straight from TickTick.
+                  //
+                  // The column is reserved even when empty. A Row gives an
+                  // invisible child no width, so hiding the dot used to slide
+                  // every untagged title left and break the one vertical line
+                  // the eye follows down the list.
                   Rectangle {
                     anchors.verticalCenter: parent.verticalCenter
-                    visible: taskRow.tagHex !== ""
+                    opacity: taskRow.tagHex === "" ? 0 : 1
                     width: Style.space(6)
                     height: Style.space(6)
                     radius: width / 2
@@ -797,9 +821,23 @@ Panel {
 
             PanelSeparator { width: parent.width; foreground: root.fg }
 
-            PanelSectionHeader {
-              text: root.habitsRemaining > 0 ? "HABITS · " + root.habitsRemaining + " LEFT" : "HABITS · DONE"
-              foreground: root.fg
+            Item {
+              width: parent.width
+              height: sectionLabel_habits.implicitHeight
+
+              PanelSectionHeader {
+                id: sectionLabel_habits
+                anchors.left: parent.left
+                text: "HABITS"
+                foreground: root.fg
+              }
+
+              PanelSectionHeader {
+                anchors.right: parent.right
+                anchors.baseline: sectionLabel_habits.baseline
+                text: root.habitsRemaining > 0 ? root.habitsRemaining + " LEFT" : "DONE"
+                foreground: root.muted
+              }
             }
 
             Repeater {
@@ -821,8 +859,10 @@ Panel {
                 height: Style.space(26)
                 radius: Style.space(4)
                 color: (habitHover.containsMouse || habitRow.selected)
-                  ? Qt.rgba(root.fg.r, root.fg.g, root.fg.b, habitRow.selected ? 0.14 : 0.08)
+                  ? Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.08)
                   : "transparent"
+                border.width: habitRow.selected ? 1 : 0
+                border.color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.55)
 
                 // Parity with tasks: the row highlights, the circle acts.
                 // Clicking a habit's name used to check it in, which is the
@@ -866,9 +906,17 @@ Panel {
                     }
                   }
 
+                  // Habits have no tag colour, but they keep the same empty
+                  // column so their titles line up with the tasks above.
+                  Item {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Style.space(6)
+                    height: Style.space(6)
+                  }
+
                   Text {
                     anchors.verticalCenter: parent.verticalCenter
-                    width: parent.width - Style.space(30) - streakLabel.implicitWidth
+                    width: parent.width - Style.space(44) - streakLabel.implicitWidth
                     elide: Text.ElideRight
                     text: Model.habitLabel(habitRow.modelData, habitRow.progress)
                     color: habitRow.progress.done ? root.muted : root.fg
@@ -897,9 +945,23 @@ Panel {
 
             PanelSeparator { width: parent.width; foreground: root.fg }
 
-            PanelSectionHeader {
-              text: "FOCUS · " + Model.pomoTodayLabel(root.pomoStats, root.pomoPrefs).toUpperCase()
-              foreground: root.fg
+            Item {
+              width: parent.width
+              height: sectionLabel_focus.implicitHeight
+
+              PanelSectionHeader {
+                id: sectionLabel_focus
+                anchors.left: parent.left
+                text: "FOCUS"
+                foreground: root.fg
+              }
+
+              PanelSectionHeader {
+                anchors.right: parent.right
+                anchors.baseline: sectionLabel_focus.baseline
+                text: Model.pomoTodayLabel(root.pomoStats, root.pomoPrefs).toUpperCase()
+                foreground: root.muted
+              }
             }
 
             Item {
@@ -966,6 +1028,46 @@ Panel {
                   foreground: root.muted
                   onClicked: root.stopPomo()
                 }
+              }
+            }
+          }
+
+          // ---- out to the source of truth. A panel that only shows a
+          //      slice of your tasks should say where the rest live.
+          Item {
+            width: parent.width
+            height: Style.space(22)
+            visible: root.signedIn
+
+            Row {
+              anchors.centerIn: parent
+              spacing: Style.space(4)
+
+              Text {
+                id: escapeLabel
+                text: "Open in TickTick"
+                color: escapeHover.containsMouse ? Color.accent : root.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+
+              Text {
+                anchors.verticalCenter: escapeLabel.verticalCenter
+                text: ""
+                color: escapeHover.containsMouse ? Color.accent : root.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+            }
+
+            MouseArea {
+              id: escapeHover
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: {
+                if (root.bar) root.bar.run("xdg-open https://ticktick.com/webapp")
+                root.close()
               }
             }
           }
