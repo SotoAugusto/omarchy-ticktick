@@ -31,9 +31,7 @@ import fcntl
 import getpass
 import json
 import os
-import shutil
 import ssl
-import subprocess
 import sys
 import time
 import urllib.error
@@ -188,57 +186,6 @@ def device_id(session: dict) -> str:
 def object_id() -> str:
     """TickTick ids are Mongo ObjectIds and v2 batch/add wants a client-made one."""
     return os.urandom(12).hex()
-
-
-# --------------------------------------------------------------------------
-# password storage (opt-in, keyring only)
-
-
-KEYRING_SERVICE = "omarchy-ticktick"
-
-
-def _secret_tool() -> str | None:
-    return shutil.which("secret-tool")
-
-
-def store_password(email: str, password: str) -> bool:
-    tool = _secret_tool()
-    if not tool:
-        return False
-    result = subprocess.run(
-        [tool, "store", "--label=Omarchy TickTick", "service", KEYRING_SERVICE, "account", email],
-        input=password,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    return result.returncode == 0
-
-
-def lookup_password(email: str) -> str | None:
-    tool = _secret_tool()
-    if not tool or not email:
-        return None
-    result = subprocess.run(
-        [tool, "lookup", "service", KEYRING_SERVICE, "account", email],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        return None
-    return result.stdout.strip() or None
-
-
-def clear_password(email: str) -> None:
-    tool = _secret_tool()
-    if not tool or not email:
-        return
-    subprocess.run(
-        [tool, "clear", "service", KEYRING_SERVICE, "account", email],
-        capture_output=True,
-        check=False,
-    )
 
 
 # --------------------------------------------------------------------------
@@ -397,25 +344,17 @@ def authed_session() -> dict:
     return session
 
 
-def with_reauth(call):
-    """Run an API call, re-logging in once if a stored password is available.
+def with_session(call):
+    """Run an API call against the stored session.
 
-    Tokens expire eventually. When the password is in the keyring the user
-    should never see that happen; when it isn't, the panel says so rather
-    than silently showing yesterday's tasks forever.
+    This used to retry by logging in again with a saved password. TickTick's
+    risk control refuses scripted password logins, so the retry never had
+    anything usable to retry with — it wrapped every call in a recovery that
+    could not happen. An expired session now surfaces as an auth error, which
+    the panel already turns into "paste a fresh token".
     """
     session = authed_session()
-    try:
-        return call(session), session
-    except TickTickError as error:
-        if not error.auth_required:
-            raise
-        password = lookup_password(session.get("email", ""))
-        if not password:
-            raise
-        session = sign_in(session["email"], password, session)
-        _write_private(TOKEN_PATH, session)
-        return call(session), session
+    return call(session), session
 
 
 # --------------------------------------------------------------------------
@@ -842,7 +781,7 @@ def log_pomodoro(start: datetime, end: datetime, pause_seconds: int, pomo_type: 
         )
 
     try:
-        result, _ = with_reauth(call)
+        result, _ = with_session(call)
     except TickTickError as error:
         if not error.transient:
             raise
@@ -886,7 +825,7 @@ def set_task_status(task_id: str, status: int) -> dict:
         return batch_task(session, update=[task])
 
     try:
-        with_reauth(call)
+        with_session(call)
     except TickTickError as error:
         if not error.transient:
             raise
@@ -930,7 +869,7 @@ def update_task(task_id: str, fields: dict) -> dict:
         return batch_task(session, update=[edited])
 
     try:
-        with_reauth(call)
+        with_session(call)
     except TickTickError as error:
         if not error.transient:
             raise
@@ -957,7 +896,7 @@ def delete_task(task_id: str) -> dict:
             },
         )
 
-    with_reauth(call)
+    with_session(call)
     return {"id": task_id}
 
 
@@ -994,7 +933,7 @@ def create_task(
         return batch_task(session, add=[task])
 
     try:
-        with_reauth(call)
+        with_session(call)
     except TickTickError as error:
         if not error.transient:
             raise
@@ -1095,7 +1034,7 @@ def check_in(habit: dict, stamp: int, value: float | None, toggle: bool) -> dict
         return entry
 
     try:
-        entry, _ = with_reauth(call)
+        entry, _ = with_session(call)
     except TickTickError as error:
         if not error.transient:
             raise
@@ -1214,16 +1153,6 @@ def cmd_login(args) -> int:
     session = sign_in(email, password, session)
     _write_private(TOKEN_PATH, session)
 
-    if args.save_password:
-        if store_password(email, password):
-            print("Password saved to the system keyring; the session will renew itself.")
-        else:
-            print(
-                "secret-tool is not installed, so the password was not saved. "
-                "Re-run login when the session expires.",
-                file=sys.stderr,
-            )
-
     state = fetch_state(session)
     write_cache(state)
     print(
@@ -1233,9 +1162,7 @@ def cmd_login(args) -> int:
 
 
 def cmd_logout(_args) -> int:
-    session = load_session()
-    clear_password(session.get("email", ""))
-    for path in (TOKEN_PATH, DATA_PATH):
+    for path in (TOKEN_PATH, DATA_PATH, OUTBOX_PATH):
         try:
             os.remove(path)
         except OSError:
@@ -1266,11 +1193,11 @@ def cmd_sync(args) -> int:
         if outbox["queued"]:
             with drain_lock() as held:
                 if held:
-                    outbox, _ = with_reauth(drain_outbox)
+                    outbox, _ = with_session(drain_outbox)
                 else:
                     # Another bar is delivering these right now.
                     outbox = dict(outbox, skippedDrain=True)
-        state, _ = with_reauth(lambda session: fetch_state(session, scope))
+        state, _ = with_session(lambda session: fetch_state(session, scope))
     except TickTickError as error:
         write_error_cache(str(error), error.auth_required)
         raise
@@ -1424,11 +1351,6 @@ def build_parser() -> argparse.ArgumentParser:
     login.add_argument(
         "--token",
         help="session token lifted from the browser's `t` cookie; skips the password login entirely",
-    )
-    login.add_argument(
-        "--save-password",
-        action="store_true",
-        help="store the password in the system keyring so the session renews itself",
     )
     login.set_defaults(func=cmd_login)
 

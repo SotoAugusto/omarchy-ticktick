@@ -33,7 +33,6 @@ turns urgent when something is late. Left click opens the panel.
 | Omarchy 4 (Quattro) with Quickshell | yes | the shell that hosts the plugin |
 | `python3` | yes | the CLI; standard library only, no pip packages |
 | `curl` | no | not used — the CLI speaks HTTP through `urllib` |
-| `secret-tool` (libsecret) | no | only for the optional `--save-password` path |
 | A TickTick account | yes | free accounts work; habits need TickTick's own habit feature |
 
 No external Python packages, no build step, and nothing is compiled.
@@ -114,15 +113,10 @@ That is a deliberate trade and you should know what you are taking on:
 - `/api/v2/user/signin` — the path several published wrappers still use — is
   a dead 404. The live one is `/user/signon`.
 
-Sessions expire eventually. When one does, the panel says so and points at
-the login command. If you would rather it recovered on its own:
-
-```bash
-omarchy-ticktick login --save-password    # needs secret-tool
-```
-
-That stores the password in your system keyring — not in a dotfile — and the
-CLI re-authenticates by itself when a token stops working.
+Sessions expire eventually. When one does the panel returns to its setup card
+and asks for a fresh token. There is no automatic renewal: it would need a
+stored password, and TickTick refuses scripted password logins anyway, so the
+machinery would sit there unable to do the one thing it exists for.
 
 Using TickTick's Chinese service instead? Set `TICKTICK_DOMAIN=dida365.com`.
 
@@ -171,7 +165,7 @@ pass `--max-age` so a sync another process just finished is not repeated.
 
 ```bash
 omarchy-ticktick login --token -            # paste the browser's `t` cookie
-omarchy-ticktick login [--email ADDR] [--save-password]
+omarchy-ticktick login [--email ADDR]          # password fallback
 omarchy-ticktick sync [--scope tasks|habits|pomo|full]
 omarchy-ticktick add "Pay rent" --due today [--priority 0|1|3|5] [--tags work,ops]
 omarchy-ticktick update <taskId> [--title T] [--due D] [--priority P] [--tags a,b]
