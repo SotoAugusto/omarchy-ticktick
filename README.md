@@ -174,6 +174,7 @@ omarchy-ticktick login --token -            # paste the browser's `t` cookie
 omarchy-ticktick login [--email ADDR] [--save-password]
 omarchy-ticktick sync [--scope tasks|habits|pomo|full]
 omarchy-ticktick add "Pay rent" --due today [--priority 0|1|3|5] [--tags work,ops]
+omarchy-ticktick update <taskId> [--title T] [--due D] [--priority P] [--tags a,b]
 omarchy-ticktick complete <taskId>
 omarchy-ticktick reopen <taskId>
 omarchy-ticktick delete <taskId>
@@ -235,6 +236,7 @@ Configure in Setup > Plugins, or inline on the bar entry in
 | Panel | `enter` | complete the task / check the habit in |
 | Panel | `u` | undo the held action |
 | Panel | `a` | focus the quick-add field |
+| Panel | `e` | edit the selected task in that same field |
 | Panel | `r` | sync now |
 | Panel | `p` | start or pause focus |
 | Panel | `d` / `del` | discard the focus block (not logged) |
@@ -390,6 +392,18 @@ Three details worth knowing:
 - Tags are lowercased, because that is the key tasks reference them by.
 
 The same syntax is listed under `?` in the panel.
+
+### Editing uses the same line
+
+Press `e` on the selected task and the field fills with the line that would
+have created it — `Renew the cert #work !1 tomorrow`. Change it, press enter,
+and the task becomes what the line says. Escape cancels.
+
+So there is no separate editor and no second syntax: what you type to make a
+task is what you edit to change it. Removal falls out of that — delete
+`#work` from the line and the tag is gone, drop `!1` and the priority clears.
+A date is applied only when the line carries one, so an undated task stays
+undated.
 
 ## The view, and what it hides
 
