@@ -100,6 +100,11 @@ Item {
     onExited: function(code) {
       if (code === 0) root.actionError = ""
       root.nowDate = new Date()
+      // The CLI just wrote data.json. Reloading here does not depend on the
+      // FileView's own watcher, which never attaches if the state directory
+      // did not exist yet when this service started — the watcher then has
+      // nothing to watch, and every write after that goes unnoticed too.
+      root.dataFile.reload()
     }
   }
 
@@ -138,6 +143,9 @@ Item {
     onExited: function(code) {
       if (code === 0) root.actionError = ""
       root.connecting = false
+      // Same reasoning as syncProc: a login, complete, add, etc. just wrote
+      // data.json, and the watcher may never have attached (see there).
+      root.dataFile.reload()
       root.drainQueue()
     }
   }
