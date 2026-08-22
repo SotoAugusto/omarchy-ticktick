@@ -26,6 +26,10 @@ Panel {
   readonly property string pluginDir: Qt.resolvedUrl(".").toString().replace("file://", "")
   readonly property string cli: pluginDir + "bin/omarchy-ticktick"
 
+  function openTickTick() {
+    if (root.bar) root.bar.run("if command -v ticktick >/dev/null 2>&1; then ticktick; else xdg-open https://ticktick.com/webapp; fi")
+  }
+
   // ---- the shared service ------------------------------------------------
   //
   // A bar exists per monitor, so this panel exists per monitor too. The cache,
@@ -690,7 +694,7 @@ Panel {
 
               Button {
                 text: "Open TickTick"
-                onClicked: if (root.bar) root.bar.run("xdg-open https://ticktick.com/webapp")
+                onClicked: root.openTickTick()
               }
             }
 
@@ -1186,7 +1190,7 @@ Panel {
               hoverEnabled: true
               cursorShape: Qt.PointingHandCursor
               onClicked: {
-                if (root.bar) root.bar.run("xdg-open https://ticktick.com/webapp")
+                root.openTickTick()
                 root.close()
               }
             }
