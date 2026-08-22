@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.0 — 2026-08-22
+
+### Added
+
+- `Open in TickTick ›` and the `Open TickTick` button launch the TickTick
+  desktop app when it is on your `PATH`, and fall back to the web app when it
+  is not.
+
+### Fixed
+
+- The panel no longer sits on "not connected" after a successful login on a
+  fresh install. `Service.qml` now reloads the cache when the CLI exits
+  instead of trusting the file watcher, which never attaches when the state
+  directory does not exist yet — and so never fires for later writes either.
+
 ## 0.2.0 — 2026-08-14
 
 ### Added
