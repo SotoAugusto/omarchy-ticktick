@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.sotoaugusto.ticktick",
   "name": "TickTick",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "author": "Augusto Soto",
   "description": "TickTick tasks, habits and a focus timer in your bar — add, edit and complete without leaving the desktop",
   "kinds": [

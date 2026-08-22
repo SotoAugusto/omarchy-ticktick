@@ -227,6 +227,8 @@ BarWidget {
         Text {
           id: marqueeText
           text: root.nextTitle
+          // Task titles are remote; AutoText would render HTML-shaped ones.
+          textFormat: Text.PlainText
           color: button.foreground
           font.family: button.fontFamily
           font.pixelSize: button.fontSize

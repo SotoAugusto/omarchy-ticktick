@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.1 — 2026-08-22
+
+### Fixed
+
+- API responses are now read with an 8 MB cap (64 KB for error bodies)
+  instead of buffered without limit, so a misbehaving endpoint cannot
+  exhaust memory.
+- Every `Text` item showing server-provided strings (task titles, tag and
+  habit names, error messages) pins `textFormat: Text.PlainText`; strings
+  handed to the shell's own components (the bar label and tooltips) have
+  angle brackets swapped for lookalikes. HTML-shaped content in a task
+  title now renders as literal text everywhere.
+- The two timed-overdue tests no longer hardcode a `-0500` offset and pass
+  in every timezone, not just west of UTC-4.
+
 ## 0.3.0 — 2026-08-22
 
 ### Added

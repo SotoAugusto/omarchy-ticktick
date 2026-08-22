@@ -602,6 +602,7 @@ Panel {
                   - undoCount.implicitWidth - undoDepth.implicitWidth
                 elide: Text.ElideRight
                 text: Model.undoLabel(root.pendingAction, root.undoLeft)
+                textFormat: Text.PlainText
                 color: root.fg
                 font.family: Style.font.family
                 font.pixelSize: Style.font.bodySmall
@@ -850,7 +851,9 @@ Panel {
                     color: taskRow.tagHex === "" ? "transparent" : taskRow.tagHex
 
                     PanelToolTip {
-                      text: taskRow.tagName
+                      // The tooltip's Text lives in the shell and defaults to
+                      // AutoText, so the remote tag name is defanged here.
+                      text: Model.plainText(taskRow.tagName)
                       visible: tagHover.containsMouse && taskRow.tagName !== ""
                     }
 
@@ -878,6 +881,10 @@ Panel {
                       id: titleText
                       anchors.verticalCenter: parent.verticalCenter
                       text: String(taskRow.modelData.title || "")
+                      // Titles come from the server. AutoText would promote
+                      // anything HTML-shaped to rich text, so every Text that
+                      // shows remote strings pins the format down.
+                      textFormat: Text.PlainText
                       color: taskRow.tier === "upcoming" ? root.muted : root.fg
                       font.family: Style.font.family
                       font.pixelSize: Style.font.bodySmall
@@ -1043,6 +1050,7 @@ Panel {
                     width: parent.width - Style.space(44) - streakLabel.implicitWidth
                     elide: Text.ElideRight
                     text: Model.habitLabel(habitRow.modelData, habitRow.progress)
+                    textFormat: Text.PlainText
                     color: habitRow.progress.done ? root.muted : root.fg
                     font.family: Style.font.family
                     font.pixelSize: Style.font.bodySmall
@@ -1206,6 +1214,7 @@ Panel {
             visible: root.actionError !== "" || (root.cacheError !== "" && root.signedIn)
             wrapMode: Text.WordWrap
             text: root.actionError !== "" ? root.actionError : root.cacheError
+            textFormat: Text.PlainText
             color: Color.accent
             font.family: Style.font.family
             font.pixelSize: Style.font.caption

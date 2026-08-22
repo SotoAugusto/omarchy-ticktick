@@ -488,7 +488,9 @@ function barLabel(mode, tasks, habitsLeft, now) {
   if (mode === "Next") {
     var next = nextTask(tasks)
     if (!next) return habitsLeft > 0 ? habitsLeft + " habits" : ""
-    return elide(String(next.title || ""), 28)
+    // This string ends up in the shell's own Text items (WidgetButton,
+    // OpticalGlyph), which default to AutoText — sanitized, not just elided.
+    return elide(plainText(next.title), 28)
   }
 
   var parts = []
@@ -500,6 +502,14 @@ function barLabel(mode, tasks, habitsLeft, now) {
 function elide(text, limit) {
   if (text.length <= limit) return text
   return text.slice(0, Math.max(1, limit - 1)) + "…"
+}
+
+// For remote strings headed into Text items outside this plugin, where
+// textFormat cannot be pinned to PlainText. Qt's AutoText heuristic keys on
+// angle brackets, so swapping them for lookalikes keeps a title readable
+// while making it inert.
+function plainText(text) {
+  return String(text || "").replace(/</g, "‹").replace(/>/g, "›")
 }
 
 function overdueCount(tasks, now) {
@@ -719,6 +729,7 @@ if (typeof module !== "undefined") {
     habitLabel: habitLabel,
     habitsRemaining: habitsRemaining,
     barLabel: barLabel,
+    plainText: plainText,
     cycleBarLabel: cycleBarLabel,
     barLabelDescription: barLabelDescription,
     elide: elide,

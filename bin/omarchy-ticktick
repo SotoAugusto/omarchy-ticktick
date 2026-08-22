@@ -61,6 +61,12 @@ USER_AGENT = (
 # login throttle sooner.
 DEVICE_VERSION = 6070
 
+# /batch/check/0 syncs the whole account, so the cap has to hold years of
+# tasks — but a cap there must be, or a compromised endpoint can feed an
+# endless body straight into memory.
+MAX_BODY_BYTES = 8 * 1024 * 1024
+MAX_ERROR_BODY_BYTES = 64 * 1024
+
 STATUS_TODO = 0
 STATUS_WONT_DO = -1
 STATUS_DONE = 2
@@ -242,11 +248,17 @@ def request(
 
     try:
         with urllib.request.urlopen(req, timeout=timeout, context=ssl.create_default_context()) as response:
-            raw = response.read().decode("utf-8").strip()
+            raw_bytes = response.read(MAX_BODY_BYTES + 1)
+            if len(raw_bytes) > MAX_BODY_BYTES:
+                raise TickTickError(
+                    f"Response from {path} exceeded {MAX_BODY_BYTES // (1024 * 1024)} MB; "
+                    "refusing to buffer it"
+                )
+            raw = raw_bytes.decode("utf-8").strip()
     except urllib.error.HTTPError as error:
         body = ""
         try:
-            body = error.read().decode("utf-8", "replace").strip()
+            body = error.read(MAX_ERROR_BODY_BYTES).decode("utf-8", "replace").strip()
         except Exception:  # noqa: BLE001 - the status matters, not the read failure
             pass
 

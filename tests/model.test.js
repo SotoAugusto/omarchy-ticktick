@@ -4,6 +4,11 @@ const Model = require('../Model.js')
 
 const NOW = new Date(2026, 7, 12, 14, 0, 0) // 2026-08-12 14:00 local
 
+// A timestamp 5h before NOW — "this morning" in every timezone the tests
+// run in. A hardcoded offset here only passes for zones west of UTC-4.
+const MORNING_ISO = new Date(NOW.getTime() - 5 * 3600 * 1000)
+  .toISOString().replace('Z', '+0000')
+
 function task(over) {
   return Object.assign({
     id: 'x',
@@ -104,7 +109,7 @@ test('an all-day task due today is not overdue at 2pm', () => {
 })
 
 test('a timed task from this morning is overdue at 2pm', () => {
-  const morning = task({ isAllDay: false, dueDate: '2026-08-12T09:00:00.000-0500' })
+  const morning = task({ isAllDay: false, dueDate: MORNING_ISO })
   assert.equal(Model.isOverdue(morning, NOW), true)
 })
 
@@ -136,6 +141,18 @@ test('barLabel counts tasks and open habits, and stays empty when idle', () => {
 test('barLabel elides a long next title', () => {
   const long = task({ title: 'Rewrite the entire authentication middleware today' })
   assert.equal(Model.barLabel('Next', [long], 0, NOW).length, 28)
+})
+
+test('the Next label defangs HTML-shaped titles before the shell sees them', () => {
+  const hostile = task({ title: '<img src="x"> <b>bold</b>' })
+  const label = Model.barLabel('Next', [hostile], 0, NOW)
+  assert.ok(!label.includes('<') && !label.includes('>'), label)
+})
+
+test('plainText swaps angle brackets for lookalikes and tolerates junk', () => {
+  assert.equal(Model.plainText('<i>x</i>'), '‹i›x‹/i›')
+  assert.equal(Model.plainText(null), '')
+  assert.equal(Model.plainText('plain'), 'plain')
 })
 
 // --- habits --------------------------------------------------------------
@@ -396,7 +413,7 @@ test('an undated task is not treated as due today', () => {
 
 test('a timed task earlier today is overdue, not today', () => {
   assert.equal(
-    Model.dueTier(task({ isAllDay: false, dueDate: '2026-08-12T09:00:00.000-0500' }), NOW),
+    Model.dueTier(task({ isAllDay: false, dueDate: MORNING_ISO }), NOW),
     'overdue')
 })
 
