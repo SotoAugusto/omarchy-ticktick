@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Task details. A chevron on the row (or `o`) expands a task's full
+  description and its subtasks. Subtasks are rows of their own: click
+  anywhere on one, or walk into them with the arrows and flip with enter —
+  `o` folds the task and steps back out. A flip goes straight out, no undo
+  window; offline it queues and replays like every other write.
+- `c` copies the selected task as a markdown note: `# Title`, one metadata
+  line (list · tags · priority · due), the description verbatim, and the
+  subtasks as a GitHub-style checklist. Goes through `wl-copy`, which must
+  be on your `PATH`.
+- The keyboard shortcut list is grouped — tasks & habits, quick add field,
+  focus timer, panel — with each key in a chip, so sixteen shortcuts scan
+  by section instead of reading as one wall.
+
+### Changed
+
+- Tasks with a duration rank ahead of plain dated tasks once the late
+  backlog is accounted for. An appointment is pinned to a moment, while an
+  all-day task keys at midnight — by time alone it used to bury an evening
+  block under every floating task dated today.
+
+### Fixed
+
+- Editing a task no longer destroys its duration. The edit field now
+  pre-fills with the task's times (`Fable #boletokk today 21:00-22:30`), a
+  trailing clock in quick-add and edit sets when — a range becomes a
+  duration, a lone time a due hour — and the CLI gained `--time` to match.
+  An end that is not after the start spills into the next day, so
+  `23:30-00:30` means overnight. Delete the clock from the line and the
+  duration goes with it: the line is the whole truth.
+- Tasks with a duration (say, a meeting 8:30–9:30) now show their whole
+  block in the panel row (`08:30–09:30`) instead of just the end time, and
+  the day marker follows the start. They are also ordered by when they
+  start, so a meeting beginning 15:30 ranks ahead of a 16:00 due time, and
+  one starting late tonight is no longer pushed out of the Today view by
+  its after-midnight end.
+
 ## 0.3.1 — 2026-08-22
 
 ### Fixed

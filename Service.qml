@@ -255,6 +255,16 @@ Item {
     scheduleAction("complete", task.title, ["complete", String(task.id)], String(task.id))
   }
 
+  // A checkbox flip goes out immediately — no undo window. The undo stack
+  // exists for completions, which roll recurring tasks forward and cannot be
+  // unrolled; a checkbox is its own undo. True when the flip was dispatched,
+  // so the row only shows its pending state for a write that is on its way.
+  function toggleSubtask(task, item) {
+    if (!task || !task.id || !item || !item.id) return false
+    runAction(["subtask", String(task.id), String(item.id)])
+    return true
+  }
+
   function checkInHabit(habit) {
     if (!habit || !habit.id) return
     var next = {}

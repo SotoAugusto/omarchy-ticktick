@@ -21,6 +21,21 @@ function task(over) {
   }, over)
 }
 
+// Duration tasks carry their start and end in the "+0000" shape TickTick
+// sends. Built from local Dates the same way MORNING_ISO is, so the tests
+// stay honest in every timezone.
+function iso(local) {
+  return local.toISOString().replace('Z', '+0000')
+}
+
+function span(startLocal, dueLocal, over) {
+  return task(Object.assign({
+    isAllDay: false,
+    startDate: iso(startLocal),
+    dueDate: iso(dueLocal)
+  }, over))
+}
+
 // --- dates ---------------------------------------------------------------
 
 test('parseApiDate handles the +0000 offset TickTick sends', () => {
@@ -121,6 +136,161 @@ test('dueLabel names the near days and counts the far ones', () => {
   assert.equal(Model.dueLabel(task({ dueDate: '2026-08-11T00:00:00.000+0000' }), NOW), 'Yesterday')
   assert.equal(Model.dueLabel(task({ dueDate: '2026-08-08T00:00:00.000+0000' }), NOW), '4d late')
   assert.equal(Model.dueLabel(task({ dueDate: '2026-08-15T00:00:00.000+0000' }), NOW), '3d')
+})
+
+// --- durations -----------------------------------------------------------
+
+test('a duration task shows its start–end range, not the end time', () => {
+  // TickTick stores "Meeting 8:30–9:30" as startDate 8:30 with dueDate 9:30,
+  // so the row that used to read 09:30 now reads the whole block.
+  const meeting = span(new Date(2026, 7, 12, 8, 30), new Date(2026, 7, 12, 9, 30))
+  assert.equal(Model.dueLabel(meeting, NOW), '08:30–09:30')
+})
+
+test('a duration crossing midnight keys the day off its start', () => {
+  const late = span(new Date(2026, 7, 12, 23, 30), new Date(2026, 7, 13, 0, 30))
+  assert.equal(Model.dueLabel(late, NOW), '23:30–00:30')
+})
+
+test('duration ranges carry the same day markers as plain times', () => {
+  assert.equal(Model.dueLabel(span(new Date(2026, 7, 13, 8, 30), new Date(2026, 7, 13, 9, 30)), NOW), 'Tmw 08:30–09:30')
+  assert.equal(Model.dueLabel(span(new Date(2026, 7, 11, 8, 30), new Date(2026, 7, 11, 9, 30)), NOW), 'Yst 08:30–09:30')
+  assert.equal(Model.dueLabel(span(new Date(2026, 7, 15, 8, 30), new Date(2026, 7, 15, 9, 30)), NOW), '3d 08:30–09:30')
+  assert.equal(Model.dueLabel(span(new Date(2026, 7, 10, 8, 30), new Date(2026, 7, 10, 9, 30)), NOW), '2d late')
+})
+
+test('only a start earlier than the end counts as a duration', () => {
+  const at = iso(new Date(2026, 7, 12, 9, 30))
+  // An ordinary timed task carries the same instant in both fields.
+  assert.equal(Model.taskStartDate(task({ isAllDay: false, startDate: at, dueDate: at })), null)
+  assert.equal(Model.taskStartDate(task({ isAllDay: false, startDate: null, dueDate: at })), null)
+  assert.equal(Model.taskStartDate(
+    task({ isAllDay: true, startDate: at, dueDate: iso(new Date(2026, 7, 12, 10, 30)) })), null)
+  assert.equal(Model.taskStartDate(span(new Date(2026, 7, 12, 8, 30), new Date(2026, 7, 12, 9, 30))).getTime(),
+    new Date(2026, 7, 12, 8, 30).getTime())
+})
+
+test('a plain timed task keeps its single due time', () => {
+  const at = iso(new Date(2026, 7, 12, 9, 30))
+  const plain = task({ isAllDay: false, startDate: at, dueDate: at })
+  assert.equal(Model.dueLabel(plain, NOW), '09:30')
+})
+
+test('an all-day multi-day span still counts to its last day', () => {
+  const trip = task({
+    isAllDay: true,
+    startDate: '2026-08-11T00:00:00.000+0000',
+    dueDate: '2026-08-15T00:00:00.000+0000'
+  })
+  assert.equal(Model.dueLabel(trip, NOW), '3d')
+})
+
+test('a duration task is ordered by when it starts', () => {
+  // Sorted by end time the 16:00 report would outrank the meeting; by start
+  // the meeting goes first, which is when it actually lands in the day.
+  const meeting = span(new Date(2026, 7, 12, 15, 30), new Date(2026, 7, 12, 16, 30), { id: 'meeting' })
+  const report = task({
+    id: 'report',
+    isAllDay: false,
+    startDate: iso(new Date(2026, 7, 12, 16, 0)),
+    dueDate: iso(new Date(2026, 7, 12, 16, 0))
+  })
+  const due = Model.dueTasks([report, meeting], { now: NOW, horizon: 'Today' })
+  assert.deepEqual(due.map(t => t.id), ['meeting', 'report'])
+})
+
+test('a duration starting late today stays in Today despite its after-midnight end', () => {
+  const late = span(new Date(2026, 7, 12, 23, 30), new Date(2026, 7, 13, 0, 30), { id: 'late' })
+  const due = Model.dueTasks([late], { now: NOW, horizon: 'Today' })
+  assert.deepEqual(due.map(t => t.id), ['late'])
+})
+
+test('a duration task ranks ahead of plain dated tasks', () => {
+  // The all-day task's time key is midnight, so by time alone it would
+  // always outrank an evening block — the meeting would drown under every
+  // floating task dated today.
+  const meeting = span(new Date(2026, 7, 12, 21, 0), new Date(2026, 7, 12, 22, 30), { id: 'meeting' })
+  const float = task({ id: 'float', dueDate: '2026-08-12T00:00:00.000+0000' })
+  const due = Model.dueTasks([float, meeting], { now: NOW, horizon: 'Today' })
+  assert.deepEqual(due.map(t => t.id), ['meeting', 'float'])
+})
+
+test('late work still outranks a duration task that has not started', () => {
+  const overdue = task({ id: 'overdue', dueDate: '2026-08-09T00:00:00.000+0000' })
+  const meeting = span(new Date(2026, 7, 12, 21, 0), new Date(2026, 7, 12, 22, 30), { id: 'meeting' })
+  const due = Model.dueTasks([meeting, overdue], { now: NOW, horizon: 'Today' })
+  assert.deepEqual(due.map(t => t.id), ['overdue', 'meeting'])
+})
+
+// --- task details --------------------------------------------------------
+
+test('hasDetails is true for a description or a named subtask, and false for empties', () => {
+  assert.equal(Model.hasDetails({ content: '  \n' }), false)
+  assert.equal(Model.hasDetails({ items: [{ title: '' }, { title: '  ' }] }), false)
+  assert.equal(Model.hasDetails({}), false)
+  assert.equal(Model.hasDetails(null), false)
+  assert.equal(Model.hasDetails({ content: 'notes' }), true)
+  assert.equal(Model.hasDetails({ items: [{ title: 'step', status: 0 }] }), true)
+})
+
+test('subtasks drop unnamed items and map status to done', () => {
+  // "Projecto astro" carries a subtask whose title was cleared; it would
+  // render as a checkbox with no name and be counted in "0/2".
+  const items = Model.subtasks({
+    items: [
+      { id: 'a', title: ' first ', status: 0 },
+      { id: 'b', title: '', status: 1 },
+      { id: 'c', title: 'done one', status: 1 },
+      { title: 'no id', status: 2 }
+    ]
+  })
+  assert.deepEqual(items, [
+    { id: 'a', title: 'first', done: false },
+    { id: 'c', title: 'done one', done: true },
+    { id: '', title: 'no id', done: true }
+  ])
+})
+
+test('taskMarkdown renders a document: heading, metadata, description, checklist', () => {
+  const projects = [{ id: 'p1', name: 'Boletokk' }]
+  const md = Model.taskMarkdown({
+    title: 'Ship <it>',
+    projectId: 'p1',
+    tags: ['work'],
+    priority: 5,
+    isAllDay: false,
+    startDate: iso(new Date(2026, 7, 12, 8, 30)),
+    dueDate: iso(new Date(2026, 7, 12, 9, 30)),
+    content: 'Body with **bold**.\n\nSecond line.',
+    items: [
+      { id: 'a', title: 'first', status: 1 },
+      { id: 'b', title: 'second', status: 0 },
+      { id: 'c', title: '', status: 0 }
+    ]
+  }, projects, 'inbox1', NOW)
+  assert.equal(md, [
+    '# Ship ‹it›',
+    '',
+    'Boletokk · #work · high priority · due 08:30–09:30',
+    '',
+    'Body with **bold**.',
+    '',
+    'Second line.',
+    '',
+    '- [x] first',
+    '- [ ] second',
+    ''
+  ].join('\n'))
+})
+
+test('a bare task is a heading and one metadata line', () => {
+  const md = Model.taskMarkdown(
+    task({ title: 'Thing', dueDate: '2026-08-12T00:00:00.000+0000' }), [], 'inbox1', NOW)
+  assert.equal(md, '# Thing\n\ndue Today\n')
+})
+
+test('taskMarkdown tolerates a missing task', () => {
+  assert.equal(Model.taskMarkdown(null, [], '', NOW), '')
 })
 
 test('priorityRank maps TickTick 0/1/3/5', () => {
@@ -425,7 +595,7 @@ test('parseCache defaults tags to an empty list', () => {
 
 test('a bare title is due today with no tags or priority', () => {
   assert.deepEqual(Model.parseQuickAdd('Pay rent'),
-    { title: 'Pay rent', tags: [], priority: 0, due: 'today', dueGiven: false })
+    { title: 'Pay rent', tags: [], priority: 0, due: 'today', dueGiven: false, time: null })
 })
 
 test('# attaches tags and strips them from the title', () => {
@@ -455,7 +625,7 @@ test('an unrecognised ! token is left in the title', () => {
 
 test('a trailing date word sets the due date and leaves', () => {
   assert.deepEqual(Model.parseQuickAdd('Ship it tomorrow'),
-    { title: 'Ship it', tags: [], priority: 0, due: 'tomorrow', dueGiven: true })
+    { title: 'Ship it', tags: [], priority: 0, due: 'tomorrow', dueGiven: true, time: null })
   assert.equal(Model.parseQuickAdd('Review 2026-09-01').due, '2026-09-01')
 })
 
@@ -634,6 +804,98 @@ test('editArgs refuses a line with no title left', () => {
 test('parseQuickAdd reports whether a date was actually given', () => {
   assert.equal(Model.parseQuickAdd('Pay rent').dueGiven, false)
   assert.equal(Model.parseQuickAdd('Pay rent tomorrow').dueGiven, true)
+})
+
+// --- trailing times ------------------------------------------------------
+
+test('a trailing time range sets a duration on the default day', () => {
+  const parsed = Model.parseQuickAdd('Meeting 21:00-22:30')
+  assert.equal(parsed.title, 'Meeting')
+  assert.equal(parsed.due, 'today')
+  assert.equal(parsed.time, '21:00-22:30')
+  assert.equal(parsed.dueGiven, true)
+})
+
+test('a lone trailing clock is a due hour, and meridiem is normalized', () => {
+  assert.equal(Model.parseQuickAdd('Call mum 9pm').time, '21:00')
+  assert.equal(Model.parseQuickAdd('Standup 9:30am').time, '09:30')
+  assert.equal(Model.parseQuickAdd('Midday thing 12pm').time, '12:00')
+  assert.equal(Model.parseQuickAdd('Night 12am').time, '00:00')
+})
+
+test('a date and a time combine', () => {
+  const parsed = Model.parseQuickAdd('Ship cert 2026-08-31 08:30')
+  assert.equal(parsed.title, 'Ship cert')
+  assert.equal(parsed.due, '2026-08-31')
+  assert.equal(parsed.time, '08:30')
+})
+
+test('a bare number or a broken clock stays in the title', () => {
+  const finish = Model.parseQuickAdd('Finish 3')
+  assert.equal(finish.title, 'Finish 3')
+  assert.equal(finish.time, null)
+  assert.equal(finish.dueGiven, false)
+
+  const overnight = Model.parseQuickAdd('Ship cert 2026-08-31 25:00')
+  assert.equal(overnight.title, 'Ship cert 2026-08-31 25:00')
+  assert.equal(overnight.dueGiven, false)
+  assert.equal(overnight.time, null)
+})
+
+// A duration has to survive an edit, which it does by the field pre-filling
+// with the range and the CLI reading it back — so both directions must
+// round-trip, including one whose end spills past midnight.
+function localSpan(startClock, endClock, offsetDays) {
+  const base = new Date()
+  base.setDate(base.getDate() + (offsetDays || 0))
+  const parts = c => c.split(':').map(Number)
+  const [sh, sm] = parts(startClock)
+  const [eh, em] = parts(endClock)
+  const start = new Date(base.getFullYear(), base.getMonth(), base.getDate(), sh, sm)
+  const end = new Date(base.getFullYear(), base.getMonth(), base.getDate(), eh, em)
+  // Overnight spans are held on the server with the end on the next day,
+  // which is exactly what the CLI's overnight rule produces.
+  if (end <= start) end.setDate(end.getDate() + 1)
+  const z = d => d.toISOString().replace('Z', '+0000')
+  return { title: 'Late block', isAllDay: false, startDate: z(start), dueDate: z(end) }
+}
+
+test('editLineFor renders a duration back as a range, and it round-trips', () => {
+  const line = Model.editLineFor(localSpan('21:00', '22:30'))
+  assert.equal(line, 'Late block today 21:00-22:30')
+  assert.equal(Model.parseQuickAdd(line).time, '21:00-22:30')
+})
+
+test('an overnight duration round-trips with the day pinned to its start', () => {
+  const line = Model.editLineFor(localSpan('23:30', '00:30'))
+  assert.equal(line, 'Late block today 23:30-00:30')
+  assert.equal(Model.parseQuickAdd(line).time, '23:30-00:30')
+})
+
+test('editLineFor renders a plain timed task back with its due hour', () => {
+  const at = new Date()
+  at.setHours(9, 30, 0, 0)
+  const line = Model.editLineFor({
+    title: 'Thing', tags: [], priority: 0, isAllDay: false,
+    startDate: at.toISOString().replace('Z', '+0000'),
+    dueDate: at.toISOString().replace('Z', '+0000')
+  })
+  assert.equal(line, 'Thing today 09:30')
+})
+
+test('editArgs and quickAddArgs carry --time', () => {
+  const edited = Model.editArgs('id1', 'Fable today 21:00-22:30')
+  const at = edited.indexOf('--time')
+  assert.ok(at >= 0)
+  assert.deepEqual(edited.slice(at, at + 2), ['--time', '21:00-22:30'])
+
+  const added = Model.quickAddArgs('Meeting 9pm')
+  const addedAt = added.indexOf('--time')
+  assert.deepEqual(added.slice(addedAt, addedAt + 2), ['--time', '21:00'])
+})
+
+test('editArgs without a time sends none, so deleting the clock clears it', () => {
+  assert.ok(!Model.editArgs('id1', 'Just a title').includes('--time'))
 })
 
 // --- the held-action stack -----------------------------------------------

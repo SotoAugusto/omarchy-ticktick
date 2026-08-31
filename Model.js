@@ -40,6 +40,28 @@ function taskDueDate(task) {
   return parseApiDate(task.dueDate)
 }
 
+// A task with a duration keeps its start in `startDate`, while `dueDate`
+// becomes the end of the block — which is why "Meeting 8:30–9:30" read as
+// 9:30 everywhere. An ordinary timed task carries the same instant in both
+// fields, so only a start that really moves earlier counts as a span.
+function taskStartDate(task) {
+  if (!task || task.isAllDay) return null
+  if (!task.startDate || !task.dueDate) return null
+  var start = parseApiDate(task.startDate)
+  var due = taskDueDate(task)
+  if (!start || !due) return null
+  if (start.getTime() >= due.getTime()) return null
+  return start
+}
+
+// The instant a task "happens": the start of a duration, otherwise the due
+// time. Sorting and the horizon cutoff share it, so a meeting is placed by
+// when it begins and one starting late tonight is not pushed out of the
+// Today view by its after-midnight end.
+function taskTimeKey(task) {
+  return taskStartDate(task) || taskDueDate(task)
+}
+
 function startOfDay(date) {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate())
 }
@@ -152,7 +174,7 @@ function dueTasks(tasks, options) {
     var late = isOverdue(task, now)
     if (late && !includeOverdue) continue
 
-    var dueValue = task.isAllDay ? endOfDay(due).getTime() : due.getTime()
+    var dueValue = task.isAllDay ? endOfDay(due).getTime() : taskTimeKey(task).getTime()
     if (!late && dueValue > cutoff) continue
 
     result.push(task)
@@ -163,10 +185,19 @@ function dueTasks(tasks, options) {
     var bLate = isOverdue(b, now) ? 0 : 1
     if (aLate !== bLate) return aLate - bLate
 
-    var aDue = taskDueDate(a)
-    var bDue = taskDueDate(b)
-    var aTime = aDue ? aDue.getTime() : 0
-    var bTime = bDue ? bDue.getTime() : 0
+    // A duration is an appointment: it is pinned to a moment you have to
+    // show up for, while a plain due time floats anywhere in its day. Among
+    // everything that is not late, the pinned moments go first — otherwise
+    // an evening block drowns under every all-day task, whose key is
+    // midnight and so always sorts ahead by time alone.
+    var aSpan = taskStartDate(a) ? 0 : 1
+    var bSpan = taskStartDate(b) ? 0 : 1
+    if (aSpan !== bSpan) return aSpan - bSpan
+
+    var aKey = taskTimeKey(a)
+    var bKey = taskTimeKey(b)
+    var aTime = aKey ? aKey.getTime() : 0
+    var bTime = bKey ? bKey.getTime() : 0
     if (aTime !== bTime) return aTime - bTime
 
     // TickTick's own tiebreak: higher priority first, then manual order.
@@ -202,7 +233,21 @@ function dueLabel(task, now) {
     return dayDelta + "d"
   }
 
-  var clock = pad2(due.getHours()) + ":" + pad2(due.getMinutes())
+  // A duration shows the whole block, and the day marker follows the start:
+  // the question the label answers is "when does this begin". A past span
+  // stays compact — how long it ran matters less than how late it is.
+  var start = taskStartDate(task)
+  if (start) {
+    var startDelta = Math.round((startOfDay(start).getTime() - startOfDay(reference).getTime()) / 86400000)
+    var range = clockLabel(start) + "–" + clockLabel(due)
+    if (startDelta === 0) return range
+    if (startDelta === 1) return "Tmw " + range
+    if (startDelta === -1) return "Yst " + range
+    if (startDelta < 0) return Math.abs(startDelta) + "d late"
+    return startDelta + "d " + range
+  }
+
+  var clock = clockLabel(due)
   if (dayDelta === 0) return clock
   if (dayDelta === 1) return "Tmw " + clock
   if (dayDelta === -1) return "Yst " + clock
@@ -210,8 +255,74 @@ function dueLabel(task, now) {
   return dayDelta + "d " + clock
 }
 
+function clockLabel(date) {
+  return pad2(date.getHours()) + ":" + pad2(date.getMinutes())
+}
+
 function pad2(value) {
   return value < 10 ? "0" + value : String(value)
+}
+
+// ---- task details ------------------------------------------------------
+
+// A task carries its long form in `content` and its checklist in `items`.
+// Both are optional, so the row's affordance (and the key that opens it)
+// should only exist when there is something behind them.
+function hasDetails(task) {
+  if (!task) return false
+  if (String(task.content || "").trim() !== "") return true
+  return subtasks(task).length > 0
+}
+
+// TickTick keeps every subtask ever typed in `items`, including ones whose
+// title was later cleared. Those would render as a checkbox with no name,
+// so they are filtered here — the one place every reader and counter
+// shares. Status 0 is open; anything else TickTick has used means done.
+function subtasks(task) {
+  var items = (task && task.items) || []
+  var result = []
+  for (var i = 0; i < items.length; i++) {
+    var title = String((items[i] && items[i].title) || "").trim()
+    if (title === "") continue
+    result.push({
+      id: String(items[i].id || ""),
+      title: title,
+      done: Number(items[i].status || 0) !== 0
+    })
+  }
+  return result
+}
+
+// The task as a standalone markdown note: heading, one line of metadata,
+// the description verbatim, then the checklist. Shaped for handing a task
+// to somewhere that has never heard of TickTick.
+function taskMarkdown(task, projects, inboxId, now) {
+  if (!task) return ""
+  var lines = ["# " + plainText(String(task.title || "Untitled"))]
+
+  var meta = []
+  var project = projectName(projects, task.projectId, inboxId)
+  if (project) meta.push(project)
+  var names = task.tags || []
+  for (var i = 0; i < names.length; i++) meta.push("#" + String(names[i]))
+  var rank = priorityRank(task)
+  if (rank !== "none") meta.push(rank + " priority")
+  var due = dueLabel(task, now)
+  if (due !== "") meta.push("due " + due)
+  if (meta.length > 0) lines.push("", meta.join(" · "))
+
+  var content = String(task.content || "").trim()
+  if (content !== "") lines.push("", content)
+
+  var items = subtasks(task)
+  if (items.length > 0) {
+    lines.push("")
+    for (var j = 0; j < items.length; j++) {
+      lines.push((items[j].done ? "- [x] " : "- [ ] ") + plainText(items[j].title))
+    }
+  }
+
+  return lines.join("\n") + "\n"
 }
 
 // TickTick priorities: 0 none, 1 low, 3 medium, 5 high.
@@ -291,12 +402,51 @@ function syncIntervalLabels() {
 // Inline syntax for the quick-add field. `#tag` and plain date words are
 // TickTick's own conventions, so they behave the way its apps taught you.
 // `!` for priority is this plugin's: TickTick has no quick-add symbol for
-// it, so nothing is being contradicted by inventing one.
+// it, so nothing is being contradicted by inventing one. A trailing clock
+// time ("21:00", "9pm", "today 21:00-22:30") sets when — a range becomes a
+// duration, a lone time becomes a due hour.
 var PRIORITY_WORDS = {
   "1": 5, "high": 5, "h": 5,
   "2": 3, "medium": 3, "med": 3, "m": 3,
   "3": 1, "low": 1, "l": 1,
   "0": 0, "none": 0
+}
+
+var DATE_WORD = "(today|tomorrow|yesterday|\\d{4}-\\d{2}-\\d{2})"
+// A bare "9" is deliberately not a time — a title can end with a number.
+// An hour must carry a colon ("21:00", "9:30am") or a meridiem ("9pm").
+var TIME_WORD = "(\\d{1,2}:\\d{2}(?:am|pm)?|\\d{1,2}(?:am|pm))"
+var TIME_RANGE = TIME_WORD + "(?:\\s*-\\s*" + TIME_WORD + ")?"
+var LEAD = "\\s(?:for\\s+|on\\s+|due\\s+|by\\s+)?"
+
+// "9pm" → "21:00", "9:30am" → "09:30". Anything that is not a real clock
+// returns null, and the token stays in the title rather than being eaten.
+function toClock24(token) {
+  var text = String(token).toLowerCase()
+
+  var clock = text.match(/^(\d{1,2}):(\d{2})(am|pm)?$/)
+  if (clock) {
+    var hour = Number(clock[1])
+    var minute = Number(clock[2])
+    if (clock[3] === "pm" && hour < 12) hour += 12
+    if (clock[3] === "am" && hour === 12) hour = 0
+    if (hour > 23 || minute > 59) return null
+    return pad2(hour) + ":" + pad2(minute)
+  }
+
+  var meridiem = text.match(/^(\d{1,2})(am|pm)$/)
+  if (!meridiem) return null
+  var hour12 = Number(meridiem[1])
+  if (hour12 < 1 || hour12 > 12) return null
+  if (meridiem[2] === "pm" && hour12 < 12) hour12 += 12
+  if (meridiem[2] === "am" && hour12 === 12) hour12 = 0
+  return pad2(hour12) + ":00"
+}
+
+// "a:b" → minutes. The CLI rebuilds instants from these, so they stay plain.
+function clockMinutes(clock) {
+  var parts = String(clock).split(":")
+  return Number(parts[0]) * 60 + Number(parts[1])
 }
 
 function parseQuickAdd(text) {
@@ -305,6 +455,7 @@ function parseQuickAdd(text) {
   var priority = 0
   var due = "today"
   var dueGiven = false
+  var time = null
 
   rest = rest.replace(/(^|\s)#([^\s#]+)/g, function(match, lead, tag) {
     tags.push(String(tag).toLowerCase())
@@ -318,15 +469,55 @@ function parseQuickAdd(text) {
     return lead
   })
 
-  // Only a trailing date word is treated as a date. "Call mum today" sets a
-  // date; "Plan today's standup" keeps its word.
-  // The preposition goes with the date. Without this, "notes for today"
-  // becomes a task called "notes for".
-  var dateMatch = rest.match(/\s(?:for\s+|on\s+|due\s+|by\s+)?(today|tomorrow|yesterday|\d{4}-\d{2}-\d{2})\s*$/i)
-  if (dateMatch) {
-    due = dateMatch[1].toLowerCase()
+  // Only a trailing date/time blob is treated as one. "Call mum today" sets
+  // a date; "Plan today's standup" keeps its word. The preposition goes
+  // with the date — without that, "notes for today" becomes a task called
+  // "notes for".
+  var dateToken = null
+  var startClock = null
+  var endClock = null
+  var endGiven = false
+
+  var dateAndTime = rest.match(new RegExp(LEAD + DATE_WORD + "\\s+" + TIME_RANGE + "\\s*$", "i"))
+  var dateOnly = dateAndTime ? null : rest.match(new RegExp(LEAD + DATE_WORD + "\\s*$", "i"))
+  var timeOnly = dateAndTime || dateOnly ? null : rest.match(new RegExp(LEAD + TIME_RANGE + "\\s*$", "i"))
+
+  if (dateAndTime) {
+    dateToken = dateAndTime[1].toLowerCase()
+    startClock = toClock24(dateAndTime[2])
+    if (dateAndTime[3]) {
+      endGiven = true
+      endClock = toClock24(dateAndTime[3])
+    }
+  } else if (dateOnly) {
+    dateToken = dateOnly[1].toLowerCase()
+  } else if (timeOnly) {
+    startClock = toClock24(timeOnly[1])
+    if (timeOnly[2]) {
+      endGiven = true
+      endClock = toClock24(timeOnly[2])
+    }
+  }
+
+  // A clock that is not a clock — "25:00", "9-10" with no colon — is just a
+  // word. The whole trailing blob stays in the title and nothing is set,
+  // which is also what keeps a title like "Finish 3" out of the parser.
+  if (dateAndTime && (startClock === null || (endGiven && endClock === null))) {
+    dateToken = null
+    startClock = null
+    endClock = null
+  }
+  if (timeOnly && (startClock === null || (endGiven && endClock === null))) {
+    startClock = null
+    endClock = null
+  }
+
+  var matched = dateAndTime || dateOnly || timeOnly
+  if (matched && (dateToken !== null || startClock !== null)) {
+    if (dateToken !== null) due = dateToken
+    time = startClock === null ? null : (endClock !== null ? startClock + "-" + endClock : startClock)
     dueGiven = true
-    rest = rest.slice(0, dateMatch.index)
+    rest = rest.slice(0, matched.index)
   }
 
   return {
@@ -334,13 +525,16 @@ function parseQuickAdd(text) {
     tags: tags,
     priority: priority,
     due: due,
-    dueGiven: dueGiven
+    dueGiven: dueGiven,
+    time: time
   }
 }
 
 // The inverse: render a task back into the line that would have produced it,
 // so editing is the same grammar as adding rather than a second syntax to
-// learn.
+// learn. A duration comes back as a range — which is what keeps one alive
+// across an edit: the field pre-fills with the times, and whatever the line
+// then says is what the task becomes.
 function editLineFor(task, index) {
   if (!task) return ""
   var parts = [String(task.title || "")]
@@ -355,19 +549,27 @@ function editLineFor(task, index) {
 
   var due = taskDueDate(task)
   if (due) {
-    var delta = Math.round((startOfDay(due).getTime() - startOfDay(new Date()).getTime()) / 86400000)
-    if (delta === 0) parts.push("today")
-    else if (delta === 1) parts.push("tomorrow")
-    else if (delta === -1) parts.push("yesterday")
-    else parts.push(due.getFullYear() + "-" + pad2(due.getMonth() + 1) + "-" + pad2(due.getDate()))
+    var start = taskStartDate(task)
+    var anchor = start || due
+    var delta = Math.round((startOfDay(anchor).getTime() - startOfDay(new Date()).getTime()) / 86400000)
+    var tail = delta === 0 ? "today"
+      : delta === 1 ? "tomorrow"
+      : delta === -1 ? "yesterday"
+      : anchor.getFullYear() + "-" + pad2(anchor.getMonth() + 1) + "-" + pad2(anchor.getDate())
+    if (!task.isAllDay) {
+      tail += " " + (start
+        ? clockLabel(start) + "-" + clockLabel(due)
+        : clockLabel(due))
+    }
+    parts.push(tail)
   }
 
   return parts.join(" ")
 }
 
-// What the line means as an edit. Tags and priority are always sent, because
-// deleting "#work" from the line is how a tag is removed; the date is only
-// sent when one is present, so an undated task stays undated.
+// What the line means as an edit. Tags, priority, and the schedule are
+// always sent, because deleting "#work" (or the clock) from the line is how
+// a tag (or a duration) is removed; an undated, untimed line sends neither.
 function editArgs(taskId, text) {
   var parsed = parseQuickAdd(text)
   if (parsed.title === "") return null
@@ -378,6 +580,7 @@ function editArgs(taskId, text) {
     "--tags", parsed.tags.join(",")
   ]
   if (parsed.dueGiven) args = args.concat(["--due", parsed.due])
+  if (parsed.time) args = args.concat(["--time", parsed.time])
   return args
 }
 
@@ -385,6 +588,7 @@ function quickAddArgs(text) {
   var parsed = parseQuickAdd(text)
   if (parsed.title === "") return null
   var args = ["add", parsed.title, "--due", parsed.due]
+  if (parsed.time) args = args.concat(["--time", parsed.time])
   if (parsed.priority > 0) args = args.concat(["--priority", String(parsed.priority)])
   if (parsed.tags.length > 0) args = args.concat(["--tags", parsed.tags.join(",")])
   return args
@@ -693,6 +897,8 @@ if (typeof module !== "undefined") {
   module.exports = {
     parseApiDate: parseApiDate,
     taskDueDate: taskDueDate,
+    taskStartDate: taskStartDate,
+    taskTimeKey: taskTimeKey,
     startOfDay: startOfDay,
     endOfDay: endOfDay,
     addDays: addDays,
@@ -730,6 +936,9 @@ if (typeof module !== "undefined") {
     habitsRemaining: habitsRemaining,
     barLabel: barLabel,
     plainText: plainText,
+    hasDetails: hasDetails,
+    subtasks: subtasks,
+    taskMarkdown: taskMarkdown,
     cycleBarLabel: cycleBarLabel,
     barLabelDescription: barLabelDescription,
     elide: elide,

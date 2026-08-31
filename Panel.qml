@@ -145,6 +145,107 @@ Panel {
     keyCatcher.forceActiveFocus()
   }
 
+  // One task open at a time. `o` and the row's chevron both write here; a
+  // task without details never takes the slot, so there is nothing to
+  // open and nothing to collapse.
+  property string expandedTaskId: ""
+
+  function toggleDetails() {
+    // `o` from inside an open task folds it and steps the cursor back onto
+    // the task's own row — the arrows would otherwise start from a subtask
+    // that no longer exists.
+    if (cursor >= 0 && cursor < navRows.length && navRows[cursor].section === "subtask") {
+      var openIndex = navRows[cursor].index
+      expandedTaskId = ""
+      syncCursorTo("task", openIndex)
+      return
+    }
+    var task = cursorTask()
+    if (!task || !Model.hasDetails(task)) return
+    expandedTaskId = expandedTaskId === String(task.id) ? "" : String(task.id)
+  }
+
+  function toggleSubtaskAt(taskIndex, subIndex) {
+    var task = displayTasks[taskIndex]
+    var subList = Model.subtasks(task)
+    if (subIndex < 0 || subIndex >= subList.length) return
+    toggleSubtask(task, subList[subIndex])
+  }
+
+  function cursorTask() {
+    if (cursor < 0 || cursor >= navRows.length) return null
+    var row = navRows[cursor]
+    if (row.section !== "task") return null
+    return displayTasks[row.index] || null
+  }
+
+  // Checkbox flips are optimistic and panel-local: the row dims until the
+  // cache comes back from the CLI carrying the new state.
+  property var pendingItemIds: ({})
+
+  // The cache always carries the post-click truth — a delivered write from
+  // the server, or a queued one mirrored in by apply_locally — so a fresh
+  // cache means every dimming has done its job.
+  onCacheChanged: pendingItemIds = ({})
+
+  function toggleSubtask(task, item) {
+    if (!svc || !item || item.id === "") return
+    var key = String(item.id)
+    if (pendingItemIds[key]) return
+    var next = {}
+    for (var k in pendingItemIds) next[k] = pendingItemIds[k]
+    next[key] = true
+    pendingItemIds = next
+    if (!svc.toggleSubtask(task, item)) {
+      next = {}
+      for (var j in pendingItemIds) if (j !== key) next[j] = pendingItemIds[j]
+      pendingItemIds = next
+    }
+  }
+
+  // ---- copy as markdown --------------------------------------------------
+
+  property string copyPayload: ""
+  property string copyNote: ""
+
+  function showCopyNote(text) {
+    copyNote = text
+    copyNoteTimer.restart()
+  }
+
+  function copyCursorTask() {
+    var task = cursorTask()
+    if (!task) return
+    // The text goes to wl-copy's stdin: a task's description can be pages
+    // long, and an argv slot that big is not a promise every kernel makes.
+    copyPayload = Model.taskMarkdown(task, cache.projects, cache.inboxId, nowDate)
+    copyProc.running = true
+  }
+
+  Timer {
+    id: copyNoteTimer
+    interval: 2600
+    onTriggered: root.copyNote = ""
+  }
+
+  Process {
+    id: copyProc
+    property bool launched: false
+    command: ["wl-copy"]
+    running: false
+    stdinEnabled: true
+    onStarted: {
+      copyProc.launched = true
+      copyProc.write(root.copyPayload)
+      copyProc.stdinEnabled = false
+    }
+    onRunningChanged: if (!running && !copyProc.launched) root.showCopyNote("wl-copy is required to copy")
+    onExited: function(code) {
+      copyProc.stdinEnabled = true
+      root.showCopyNote(code === 0 ? "Copied to clipboard" : "wl-copy is required to copy")
+    }
+  }
+
   function submitQuickAdd() {
     if (!svc) return
     var text = String(quickAdd.text || "").trim()
@@ -190,10 +291,18 @@ Panel {
   property int cursor: -1
   property bool helpVisible: false
 
+  // An expanded task's subtasks are rows too: the arrows walk into them,
+  // enter flips the one under the cursor, and `o` folds the task and steps
+  // back out. Driven by expandedTaskId, so exactly one task is ever open.
   readonly property var navRows: {
     var rows = []
     if (showTasks) {
-      for (var i = 0; i < displayTasks.length; i++) rows.push({ section: "task", index: i })
+      for (var i = 0; i < displayTasks.length; i++) {
+        rows.push({ section: "task", index: i })
+        if (expandedTaskId === "" || String(displayTasks[i].id) !== expandedTaskId) continue
+        var subs = Model.subtasks(displayTasks[i])
+        for (var s = 0; s < subs.length; s++) rows.push({ section: "subtask", index: i, item: s })
+      }
     }
     if (showHabits) {
       for (var j = 0; j < habits.length; j++) rows.push({ section: "habit", index: j })
@@ -229,12 +338,23 @@ Panel {
     }
   }
 
+  function syncCursorToSubtask(taskIndex, itemIndex) {
+    for (var i = 0; i < navRows.length; i++) {
+      var row = navRows[i]
+      if (row.section === "subtask" && row.index === taskIndex && row.item === itemIndex) {
+        cursor = i
+        return
+      }
+    }
+  }
+
   function activateCursor() {
     if (cursor < 0 || cursor >= navRows.length) return
     var row = navRows[cursor]
     // completeTask ignores an id-less ghost, so a pending row is inert
     // rather than silently completing the wrong task.
     if (row.section === "task") completeTask(displayTasks[row.index])
+    else if (row.section === "subtask") toggleSubtaskAt(row.index, row.item)
     else checkInHabit(habits[row.index])
   }
 
@@ -242,6 +362,12 @@ Panel {
     if (!cursorActive || cursor < 0 || cursor >= navRows.length) return false
     var row = navRows[cursor]
     return row.section === section && row.index === index
+  }
+
+  function isCursorOnSubtask(taskIndex, itemIndex) {
+    if (!cursorActive || cursor < 0 || cursor >= navRows.length) return false
+    var row = navRows[cursor]
+    return row.section === "subtask" && row.index === taskIndex && row.item === itemIndex
   }
 
   // The list shrinks as things get completed; a cursor left past the end
@@ -287,6 +413,8 @@ Panel {
     cursor = -1
     cursorActive = false
     editingTaskId = ""
+    expandedTaskId = ""
+    pendingItemIds = ({})
     quickAdd.text = ""
     quickAdd.text = ""
     quickAdd.focus = false
@@ -351,6 +479,8 @@ Panel {
         else if (text === "r") root.refresh()
         else if (text === "a") quickAdd.forceActiveFocus()
         else if (text === "e") root.beginEdit()
+        else if (text === "o") root.toggleDetails()
+        else if (text === "c") root.copyCursorTask()
         else if (text === "u") root.cancelPending()
         else if (text === "p") {
           if (root.pomoRunning) root.pausePomo()
@@ -515,55 +645,118 @@ Panel {
           // ---- keyboard help. Reachable two ways on purpose: `?` for the
           //      keyboard, the header button for the mouse. A shortcut list
           //      only findable by shortcut helps whoever needs it least.
+          //
+          //      Grouped by where the keys act, because sixteen rows of
+          //      undifferentiated key–prose pairs are scanned by reading
+          //      every one. Each group answers "I want to touch the list /
+          //      type a task / run the timer / drive the panel", which is
+          //      how you look for a key you have forgotten.
           Column {
             width: parent.width
-            spacing: Style.space(3)
+            spacing: Style.space(5)
             visible: root.helpVisible
 
             PanelSeparator { width: parent.width; foreground: root.fg }
 
-            PanelSectionHeader { text: "KEYS"; foreground: root.fg }
-
             Repeater {
               model: [
-                { key: "\u2191 \u2193", what: "move between tasks and habits" },
-                { key: "enter", what: "complete task / check habit in" },
-                { key: "u", what: "undo the held action" },
-                { key: "a", what: "add a task" },
-                { key: "e", what: "edit the selected task in the field" },
-                { key: "#tag", what: "tag it — # is TickTick's own" },
-                { key: "!1 !2 !3", what: "priority: high, medium, low" },
-                { key: "tomorrow", what: "a trailing date word sets the due date" },
-                { key: "r", what: "sync now" },
-                { key: "p", what: "start or pause focus" },
-                { key: "d / del", what: "discard the focus block" },
-                { key: "g / G", what: "first / last row" },
-                { key: "v", what: "cycle range: today \u2192 tomorrow \u2192 7 days \u21ba" },
-                { key: "tab", what: "next bar panel" },
-                { key: "?", what: "show or hide this list" },
-                { key: "esc", what: "back out, then close" }
+                {
+                  title: "Tasks & habits",
+                  entries: [
+                    { key: "\u2191 \u2193", what: "move \u2014 into an open task's subtasks too" },
+                    { key: "enter", what: "complete task / check in / flip subtask" },
+                    { key: "g / G", what: "first / last row" },
+                    { key: "o", what: "open details, or fold them and step back out" },
+                    { key: "e", what: "edit the selected task in the field" },
+                    { key: "c", what: "copy the selected task as markdown" },
+                    { key: "u", what: "undo the held action" }
+                  ]
+                },
+                {
+                  title: "Quick add field",
+                  entries: [
+                    { key: "a", what: "add a task" },
+                    { key: "#tag", what: "tag it — # is TickTick's own" },
+                    { key: "!1 !2 !3", what: "priority: high, medium, low" },
+                    { key: "tomorrow", what: "a trailing date or time sets when \u2014 \"fri 9:30-11\"" }
+                  ]
+                },
+                {
+                  title: "Focus timer",
+                  entries: [
+                    { key: "p", what: "start or pause focus" },
+                    { key: "d / del", what: "discard the focus block" }
+                  ]
+                },
+                {
+                  title: "Panel",
+                  entries: [
+                    { key: "v", what: "cycle range: today \u2192 tomorrow \u2192 7 days \u21ba" },
+                    { key: "r", what: "sync now" },
+                    { key: "tab", what: "next bar panel" },
+                    { key: "?", what: "show or hide this list" },
+                    { key: "esc", what: "back out, then close" }
+                  ]
+                }
               ]
 
-              Row {
+              Column {
+                id: shortcutGroup
                 required property var modelData
                 width: content.width
-                spacing: Style.space(8)
+                spacing: Style.space(3)
 
-                Text {
-                  width: Style.space(52)
-                  horizontalAlignment: Text.AlignRight
-                  text: modelData.key
-                  color: Color.accent
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.caption
-                  font.bold: true
+                PanelSectionHeader {
+                  text: shortcutGroup.modelData.title.toUpperCase()
+                  foreground: root.fg
                 }
 
-                Text {
-                  text: modelData.what
-                  color: root.muted
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.caption
+                Repeater {
+                  model: shortcutGroup.modelData.entries
+
+                  Row {
+                    id: shortcutRow
+                    required property var modelData
+                    width: content.width
+                    spacing: Style.space(8)
+
+                    // The key sits in a chip, not as bare colored text: at
+                    // sixteen entries the eye needs anchors to walk back up
+                    // and down the column, and a filled shape does that at
+                    // any distance. Right-aligned in a shared column so the
+                    // chips stack into one rail.
+                    Item {
+                      width: Style.space(52)
+                      height: keycap.height
+
+                      Rectangle {
+                        id: keycap
+                        anchors.right: parent.right
+                        implicitWidth: keyText.implicitWidth + Style.space(6)
+                        height: keyText.implicitHeight + Style.space(2)
+                        radius: Style.space(3)
+                        color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.13)
+
+                        Text {
+                          id: keyText
+                          anchors.centerIn: parent
+                          text: shortcutRow.modelData.key
+                          color: Color.accent
+                          font.family: Style.font.family
+                          font.pixelSize: Style.font.caption
+                          font.bold: true
+                        }
+                      }
+                    }
+
+                    Text {
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: shortcutRow.modelData.what
+                      color: root.muted
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.caption
+                    }
+                  }
                 }
               }
             }
@@ -632,6 +825,30 @@ Panel {
               anchors.fill: parent
               cursorShape: Qt.PointingHandCursor
               onClicked: root.cancelPending()
+            }
+          }
+
+          // ---- copy note. Same surface the undo bar uses, on a timer
+          //      instead of a countdown: copying needs a receipt, not a
+          //      confirmation dialog.
+          Rectangle {
+            width: parent.width
+            height: root.copyNote !== "" ? Style.space(28) : 0
+            visible: root.copyNote !== ""
+            radius: Style.space(4)
+            color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.08)
+
+            Text {
+              anchors.fill: parent
+              anchors.leftMargin: Style.space(8)
+              anchors.rightMargin: Style.space(8)
+              verticalAlignment: Text.AlignVCenter
+              elide: Text.ElideRight
+              text: root.copyNote
+              textFormat: Text.PlainText
+              color: root.fg
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
             }
           }
 
@@ -776,9 +993,13 @@ Panel {
                 readonly property string tier: Model.dueTier(modelData, root.nowDate)
                 readonly property string tagHex: Model.tagColor(modelData, root.tagsById)
                 readonly property string tagName: Model.tagLabel(modelData, root.tagsById)
+                readonly property var taskSubtasks: Model.subtasks(modelData)
+                readonly property bool hasDetails: Model.hasDetails(modelData)
+                readonly property bool expanded: hasDetails
+                  && root.expandedTaskId === String(modelData.id)
 
                 width: content.width
-                height: Style.space(26)
+                height: Style.space(26) + (expanded ? detailColumn.height : 0)
                 radius: Style.space(4)
                 color: (taskHover.containsMouse || taskRow.selected)
                   ? Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.08)
@@ -798,15 +1019,27 @@ Panel {
                   hoverEnabled: true
                   acceptedButtons: Qt.NoButton
                   // Hover takes the cursor so keyboard and mouse never
-                  // disagree about which row is current.
-                  onContainsMouseChanged: if (containsMouse) {
+                  // disagree about which row is current. Over an open task,
+                  // only the title band speaks for the task — the strips
+                  // below it are the subtasks', and they sync themselves.
+                  onContainsMouseChanged: taskHover.followHover()
+                  onPositionChanged: taskHover.followHover()
+                  function followHover() {
+                    if (!containsMouse) return
+                    if (taskRow.expanded && mouseY >= Style.space(26)) return
                     root.cursorActive = false
                     root.syncCursorTo("task", taskRow.index)
                   }
                 }
 
                 Row {
-                  anchors.fill: parent
+                  // The title band keeps the height it had before tasks could
+                  // open: expansion adds a section below it, it does not
+                  // stretch the line the checkbox lives on.
+                  anchors.top: parent.top
+                  anchors.left: parent.left
+                  anchors.right: parent.right
+                  height: Style.space(26)
                   anchors.leftMargin: Style.space(6)
                   anchors.rightMargin: Style.space(6)
                   spacing: Style.space(8)
@@ -874,7 +1107,8 @@ Panel {
                     width: parent.width - Style.space(30)
                       - Style.space(14)
                       - dueLabel.implicitWidth
-                    height: taskRow.height
+                      - (taskRow.hasDetails ? Style.space(24) : 0)
+                    height: Style.space(26)
                     clip: true
 
                     Text {
@@ -929,6 +1163,151 @@ Panel {
                       : (taskRow.tier === "today" ? root.fg : root.muted)
                     font.family: Style.font.family
                     font.pixelSize: Style.font.caption
+                  }
+
+                  // The only sign a task has something behind it. Present
+                  // whenever details exist — collapsed rows hide their
+                  // description, so without this the feature would be
+                  // invisible until you happened to press `o`. The hit area
+                  // is the full title band, not the glyph: a chevron is a
+                  // target for a pointer, and a 10px one is a target for
+                  // nobody.
+                  Item {
+                    id: detailToggle
+                    visible: taskRow.hasDetails
+                    width: visible ? Style.space(24) : 0
+                    height: Style.space(26)
+
+                    MouseArea {
+                      id: chevronHover
+                      anchors.fill: parent
+                      hoverEnabled: true
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: root.expandedTaskId = taskRow.expanded
+                        ? ""
+                        : String(taskRow.modelData.id)
+                    }
+
+                    Text {
+                      anchors.centerIn: parent
+                      text: taskRow.expanded ? "\u25BE" : "\u25B8"
+                      color: chevronHover.containsMouse || taskRow.expanded
+                        ? root.fg
+                        : root.muted
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.bodySmall
+                    }
+
+                    PanelToolTip {
+                      text: taskRow.expanded ? "Hide details (o)" : "Show details (o)"
+                      visible: chevronHover.containsMouse
+                    }
+                  }
+                }
+
+                // ---- expanded details: description and subtasks -----------
+                //
+                // Sits below the title band inside the same row rectangle, so
+                // the cursor outline, hover tint, and selection geometry all
+                // keep working while a task is open.
+                Column {
+                  id: detailColumn
+                  visible: taskRow.expanded
+                  height: visible ? implicitHeight : 0
+                  width: parent.width - Style.space(30)
+                  x: Style.space(30)
+                  y: Style.space(26)
+                  spacing: Style.space(6)
+
+                  Text {
+                    visible: String(taskRow.modelData.content || "").trim() !== ""
+                    width: parent.width
+                    text: String(taskRow.modelData.content || "").trim()
+                    // Descriptions come from the server and often read as
+                    // markdown; AutoText would promote anything HTML-shaped
+                    // in them to rich text.
+                    textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
+                    // The whole text, not a preview: the panel's own scroll
+                    // is how a long one is read, and a description that
+                    // stops mid-sentence is not a description.
+                    color: root.muted
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                  }
+
+                  Repeater {
+                    model: taskRow.taskSubtasks
+
+                    // A subtask behaves like a row, not like a label beside a
+                    // tiny checkbox: the whole strip is the hit area, hover
+                    // takes the keyboard cursor, and the cursor highlight is
+                    // the same tint the task rows use.
+                    Rectangle {
+                      id: subtaskRow
+                      required property var modelData
+                      required property int index
+                      readonly property bool itemPending: root.pendingItemIds[modelData.id] === true
+                      readonly property bool selected: root.isCursorOnSubtask(taskRow.index, index)
+
+                      width: detailColumn.width
+                      height: Style.space(22)
+                      radius: Style.space(3)
+                      color: selected
+                        ? Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.08)
+                        : "transparent"
+
+                      opacity: itemPending ? 0.45 : 1
+
+                      MouseArea {
+                        id: subtaskHover
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        // Hover takes the cursor so `enter` always acts on
+                        // the row being pointed at, exactly as task rows do.
+                        onContainsMouseChanged: if (containsMouse) {
+                          root.cursorActive = false
+                          root.syncCursorToSubtask(taskRow.index, subtaskRow.index)
+                        }
+                        onClicked: root.toggleSubtask(taskRow.modelData, subtaskRow.modelData)
+                      }
+
+                      Row {
+                        anchors.fill: parent
+                        anchors.leftMargin: Style.space(4)
+                        anchors.rightMargin: Style.space(4)
+                        spacing: Style.space(8)
+
+                        Item {
+                          anchors.verticalCenter: parent.verticalCenter
+                          width: Style.space(18)
+                          height: Style.space(18)
+
+                          Text {
+                            anchors.centerIn: parent
+                            text: subtaskRow.modelData.done ? "\u2611" : "\u2610"
+                            color: subtaskRow.modelData.done ? Color.accent : root.muted
+                            font.family: Style.font.family
+                            font.pixelSize: Style.font.bodySmall
+                          }
+                        }
+
+                        Text {
+                          anchors.verticalCenter: parent.verticalCenter
+                          width: parent.width - Style.space(26)
+                          elide: Text.ElideRight
+                          text: subtaskRow.modelData.title
+                          // Subtask titles come from the server; same rule as
+                          // every other remote string here.
+                          textFormat: Text.PlainText
+                          color: subtaskRow.modelData.done ? root.muted : root.fg
+                          font.family: Style.font.family
+                          font.pixelSize: Style.font.bodySmall
+                          font.strikeout: subtaskRow.modelData.done
+                        }
+                      }
+                    }
                   }
                 }
               }

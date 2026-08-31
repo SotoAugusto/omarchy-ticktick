@@ -226,8 +226,10 @@ Configure in Setup > Plugins, or inline on the bar entry in
 | Panel | click the circle | complete the task / check the habit in |
 | Panel | click the title | cycle the range (Today → Tomorrow → 7 days) |
 | Panel | `Open in TickTick ›` | open the web app or desktop app, when installed, and close the panel |
-| Panel | `↑` `↓` | move between tasks and habits |
-| Panel | `enter` | complete the task / check the habit in |
+| Panel | `↑` `↓` | move between tasks and habits — into an open task's subtasks too |
+| Panel | `enter` | complete the task / check the habit in / flip the subtask |
+| Panel | `o` | open the task's details (description, subtasks); again folds and steps back out |
+| Panel | `c` | copy the selected task as markdown |
 | Panel | `u` | undo the held action |
 | Panel | `a` | focus the quick-add field |
 | Panel | `e` | edit the selected task in that same field |
@@ -369,10 +371,17 @@ Renew the TLS cert #work !1 tomorrow
 | `!1` `!2` `!3` | priority: high, medium, low | this plugin's |
 | `!high` `!med` `!low` | the same, spelled out | this plugin's |
 | trailing `today` / `tomorrow` / `yesterday` / `2026-09-01` | sets the due date | TickTick parses dates from text too |
+| trailing `21:00` / `9pm` / `9:30am` | sets a due hour | TickTick parses times too |
+| trailing `21:00-22:30` / `9am-5pm` | sets a duration; an end not after the start spills into the next day | this plugin's |
 
 Everything not consumed becomes the title, so the line above creates *Renew
 the TLS cert*, tagged `work`, high priority, due tomorrow. With no syntax at
 all it is a plain task due today.
+
+Editing pre-fills the field with the line that would have created the task —
+including its times — so a duration survives an edit by riding along in the
+line. Delete the clock from the line and the duration is deleted with it;
+the line is always the whole truth.
 
 TickTick has no quick-add symbol for priority — it is still an open request
 on their forum — so `!` is defined here rather than borrowed. `#` and the
