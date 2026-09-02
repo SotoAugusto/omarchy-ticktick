@@ -251,6 +251,10 @@ Item {
 
   function completeTask(task) {
     if (!task || !task.id) return
+    if (Model.isRecurringTask(task)) {
+      actionError = "Complete recurring tasks in TickTick so the series continues."
+      return
+    }
     markPending(task.id)
     scheduleAction("complete", task.title, ["complete", String(task.id)], String(task.id))
   }

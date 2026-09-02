@@ -95,6 +95,33 @@ class TickTickError(RuntimeError):
         self.transient = transient
 
 
+def is_recurring_task(task: dict) -> bool:
+    """Whether a task carries a live recurrence marker.
+
+    `repeatFlag` is the ordinary RRULE, but TickTick can leave it empty on a
+    live series that repeats from completion. Those tasks retain one of the
+    other relationship fields instead. A zero `repeatFrom` appears on plain
+    tasks too, so it is not a recurrence marker by itself.
+    """
+    if not isinstance(task, dict):
+        return False
+    if task.get("repeatTaskId") or task.get("repeatFirstDate"):
+        return True
+    if task.get("repeatFrom") not in (None, "", 0, "0"):
+        return True
+    repeat_flag = task.get("repeatFlag")
+    return bool(repeat_flag and str(repeat_flag).strip())
+
+
+def ensure_completion_is_safe(task: dict, status: int) -> None:
+    """Refuse the generic v2 mutation that terminates recurring series."""
+    if status == STATUS_DONE and is_recurring_task(task):
+        raise TickTickError(
+            "Recurring tasks cannot be completed safely through the session API; "
+            "complete this task in TickTick so its next occurrence is generated."
+        )
+
+
 # v2 reports failures in-band as often as by status code, and it picks the
 # status code carelessly — bad credentials come back as a 500 carrying a
 # perfectly clear errorCode. So the body is what gets trusted, not the code.
@@ -506,7 +533,9 @@ def replay(entry: dict, session: dict) -> None:
 
     elif kind in ("complete", "reopen"):
         task = dict(find_task(payload["taskId"], session))
-        task["status"] = STATUS_DONE if kind == "complete" else STATUS_TODO
+        target = STATUS_DONE if kind == "complete" else STATUS_TODO
+        ensure_completion_is_safe(task, target)
+        task["status"] = target
         if kind == "complete":
             task["completedTime"] = payload.get("completedTime") or now_api_time()
         else:
@@ -841,8 +870,17 @@ def set_task_status(task_id: str, status: int) -> dict:
     """
     holder = {}
 
+    if status == STATUS_DONE:
+        try:
+            local_task = cached_task(task_id)
+        except TickTickError:
+            local_task = None
+        if local_task is not None:
+            ensure_completion_is_safe(local_task, status)
+
     def call(session):
         task = dict(find_task(task_id, session))
+        ensure_completion_is_safe(task, status)
         task["status"] = status
         if status == STATUS_DONE:
             task["completedTime"] = now_api_time()

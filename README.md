@@ -265,12 +265,16 @@ a place.
 
 ```bash
 node --test tests/model.test.js
+python3 tests/test_cli.py
 ```
 
 `Model.js` holds every piece of logic that can be wrong without being
 visibly wrong — timezone handling on all-day due dates, streak counting
 across a day that is still open, overdue sorting — so it is plain JS with no
 QML imports and runs under node.
+
+The CLI tests exercise state-changing request paths with an isolated fake
+session, so they never read account credentials or contact TickTick.
 
 ## Background sync
 
@@ -488,11 +492,16 @@ its own countdown, `u` takes back the most recent, and pressing it repeatedly
 walks back through them. The row shows how many are behind the one on offer
 (`+2 more`).
 
-It works this way because the alternative does not work. Completing a
-*recurring* task rolls it forward to its next occurrence, and a later
-`reopen` does not put that back; you get a different task in a different
-state. An undo that never sends the request is the only one that is
-actually reversible.
+It works this way because the alternative does not work. TickTick's own
+completion flow rolls a *recurring* task forward and records the finished
+occurrence separately, so a later `reopen` cannot put that transaction back.
+An undo that never sends the request is the only one that is actually
+reversible.
+
+Recurring tasks themselves stay in TickTick for completion. This plugin's
+session API exposes only a generic task update, which closes the live series
+instead of rolling it forward; the panel and CLI refuse that destructive
+write and direct you to TickTick. Ordinary tasks still complete here.
 
 ## Focus timer
 
