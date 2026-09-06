@@ -26,6 +26,8 @@
       "horizon": "Today",
       "maxTasks": 12,
       "barLabel": "Count",
+      "notifyOnDue": false,
+      "notifyLeadMinutes": 0,
       "undoSeconds": 6,
       "showPomo": true,
       "pomoMinutes": 0,
@@ -101,6 +103,23 @@
           "Icon"
         ],
         "defaultValue": "Count"
+      },
+      {
+        "key": "notifyOnDue",
+        "type": "boolean",
+        "label": "Notify when a task is due",
+        "description": "Send a desktop notification the moment a task's time arrives. Tasks with a date but no time are never announced — their due time is midnight. Needs notify-send on your PATH.",
+        "defaultValue": false
+      },
+      {
+        "key": "notifyLeadMinutes",
+        "type": "integer",
+        "label": "Notify this early (minutes)",
+        "description": "Announce a task ahead of its time rather than on it. 0 notifies at the moment itself.",
+        "min": 0,
+        "max": 120,
+        "step": 5,
+        "defaultValue": 0
       },
       {
         "key": "showPomo",

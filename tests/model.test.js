@@ -842,6 +842,43 @@ test('a bare number or a broken clock stays in the title', () => {
   assert.equal(overnight.time, null)
 })
 
+test('the space in "9 pm" is the typist\'s, not the grammar\'s', () => {
+  const parsed = Model.parseQuickAdd('test notification on 1:33 am')
+  assert.equal(parsed.title, 'test notification')
+  assert.equal(parsed.time, '01:33')
+  assert.equal(Model.parseQuickAdd('Call mum 9 pm').time, '21:00')
+  assert.equal(Model.parseQuickAdd('Meet Pat at 5 PM').time, '17:00')
+})
+
+test('"at" and "@" go with the clock instead of being stranded in the title', () => {
+  assert.equal(Model.parseQuickAdd('Call mum at 9pm').title, 'Call mum')
+  assert.equal(Model.parseQuickAdd('Call mum @ 9pm').title, 'Call mum')
+  assert.equal(Model.parseQuickAdd('Call mum @9pm').title, 'Call mum')
+  assert.equal(Model.parseQuickAdd('Call mum at 9pm').time, '21:00')
+})
+
+test('filler sits between the day and the clock as well as before them', () => {
+  const parsed = Model.parseQuickAdd('Standup tomorrow at 9:15 am')
+  assert.equal(parsed.title, 'Standup')
+  assert.equal(parsed.due, 'tomorrow')
+  assert.equal(parsed.time, '09:15')
+  assert.equal(Model.parseQuickAdd('Dentist due 2026-09-12 at 14:00').due, '2026-09-12')
+})
+
+test('a spaced range is still one duration', () => {
+  const parsed = Model.parseQuickAdd('Meeting today 8:30 am - 9:30 am')
+  assert.equal(parsed.title, 'Meeting')
+  assert.equal(parsed.time, '08:30-09:30')
+})
+
+test('a word that merely begins with a meridiem is not a clock', () => {
+  assert.equal(Model.parseQuickAdd('Buy 2 amps').title, 'Buy 2 amps')
+  assert.equal(Model.parseQuickAdd('Buy 2 amps').dueGiven, false)
+  assert.equal(Model.parseQuickAdd('Read 5 pages').dueGiven, false)
+  // The "at" inside "cat" is not filler: the clock is taken, the cat stays.
+  assert.equal(Model.parseQuickAdd('Feed the cat 9pm').title, 'Feed the cat')
+})
+
 // A duration has to survive an edit, which it does by the field pre-filling
 // with the range and the CLI reading it back — so both directions must
 // round-trip, including one whose end spills past midnight.
@@ -971,4 +1008,212 @@ test('each mode has a short description for the tooltip', () => {
   assert.equal(Model.barLabelDescription('Count'), 'counts')
   assert.equal(Model.barLabelDescription('Next'), 'next task')
   assert.equal(Model.barLabelDescription('Icon'), 'icon only')
+})
+
+// --- due notifications ---------------------------------------------------
+
+// A timed task at a given offset from NOW, in minutes. Built from a local
+// Date like every other fixture here, so the tests hold in any timezone.
+function at(minutesFromNow, over) {
+  const when = new Date(NOW.getTime() + minutesFromNow * 60000)
+  return task(Object.assign({ isAllDay: false, dueDate: iso(when) }, over))
+}
+
+test('a task announces itself once its moment has arrived, and never twice', () => {
+  const list = [at(-1, { id: 'a', title: 'Standup' })]
+  const first = Model.dueNotifications(list, NOW, {}, {})
+  assert.deepEqual(first.due.map(t => t.id), ['a'])
+
+  // Feeding the map back is what the service does; the second pass is silent.
+  const second = Model.dueNotifications(list, NOW, first.notified, {})
+  assert.deepEqual(second.due, [])
+})
+
+test('a task still in the future is not announced', () => {
+  const result = Model.dueNotifications([at(30, { id: 'a' })], NOW, {}, {})
+  assert.deepEqual(result.due, [])
+  assert.deepEqual(result.notified, {})
+})
+
+test('lead minutes announce a task before its time, not after', () => {
+  const list = [at(10, { id: 'a' })]
+  assert.deepEqual(Model.dueNotifications(list, NOW, {}, { leadMinutes: 5 }).due, [])
+  assert.deepEqual(
+    Model.dueNotifications(list, NOW, {}, { leadMinutes: 15 }).due.map(t => t.id),
+    ['a']
+  )
+})
+
+test('a moment older than the catch-up window is dropped, not announced late', () => {
+  const result = Model.dueNotifications([at(-90, { id: 'a' })], NOW, {}, {})
+  assert.deepEqual(result.due, [])
+  // And not recorded either: the clock only moves forward, so it can never
+  // come back around and claim a slot in the map.
+  assert.deepEqual(result.notified, {})
+})
+
+test('a moment from the gap since the last check still arrives once', () => {
+  // The shell was restarted, or the laptop was asleep, at 13:30.
+  const result = Model.dueNotifications([at(-30, { id: 'a' })], NOW, {}, {})
+  assert.deepEqual(result.due.map(t => t.id), ['a'])
+})
+
+test('an all-day task is never announced — its due time is midnight', () => {
+  const list = [task({ id: 'a', isAllDay: true, dueDate: '2026-08-12T00:00:00.000+0000' })]
+  assert.deepEqual(Model.dueNotifications(list, NOW, {}, {}).due, [])
+})
+
+test('completed, abandoned and undated tasks are never announced', () => {
+  const list = [
+    at(-1, { id: 'done', status: 2 }),
+    at(-1, { id: 'wont', status: -1 }),
+    at(-1, { id: 'gone', deleted: 1 }),
+    task({ id: 'undated', isAllDay: false })
+  ]
+  assert.deepEqual(Model.dueNotifications(list, NOW, {}, {}).due, [])
+})
+
+test('a duration is announced when it starts, not when it ends', () => {
+  // 13:55-15:00: the block is under way, so it is news now, not at 15:00.
+  const meeting = span(
+    new Date(NOW.getTime() - 5 * 60000),
+    new Date(NOW.getTime() + 60 * 60000),
+    { id: 'm', title: 'Review' }
+  )
+  const result = Model.dueNotifications([meeting], NOW, {}, {})
+  assert.deepEqual(result.due.map(t => t.id), ['m'])
+  // The key is the start instant, which is what was announced.
+  assert.equal(
+    Object.keys(result.notified)[0],
+    'm@' + Model.taskStartDate(meeting).getTime()
+  )
+})
+
+test('a recurring task announces itself again once its due date rolls forward', () => {
+  const today = [at(-1, { id: 'daily', title: 'Vitamins' })]
+  const first = Model.dueNotifications(today, NOW, {}, {})
+  assert.deepEqual(first.due.map(t => t.id), ['daily'])
+
+  // Same id, tomorrow's instant — the shape TickTick returns after the
+  // completion rolls the task forward.
+  const tomorrow = new Date(NOW.getTime() + 24 * 60 * 60000)
+  const rolled = [task({ id: 'daily', isAllDay: false, dueDate: iso(tomorrow) })]
+  const later = Model.dueNotifications(rolled, tomorrow, first.notified, {})
+  assert.deepEqual(later.due.map(t => t.id), ['daily'])
+})
+
+test('a completion held in the undo window is not announced', () => {
+  const list = [at(-1, { id: 'a' })]
+  const result = Model.dueNotifications(list, NOW, {}, { skipIds: { a: true } })
+  assert.deepEqual(result.due, [])
+  // Nor recorded, so a completion that fails still gets its reminder.
+  assert.deepEqual(result.notified, {})
+})
+
+test('the map keeps only what can still suppress something', () => {
+  const seen = {
+    'stale@1': true,
+    'gone@2': true
+  }
+  const list = [at(-1, { id: 'a' })]
+  const result = Model.dueNotifications(list, NOW, seen, {})
+  // Keys for tasks no longer in the cache, and for moments past the window,
+  // are rebuilt away rather than accumulating over weeks of uptime.
+  assert.deepEqual(Object.keys(result.notified), ['a@' + Model.taskDueDate(list[0]).getTime()])
+})
+
+test('everything that crosses at once is announced in start order', () => {
+  const list = [at(-1, { id: 'late', title: 'B' }), at(-20, { id: 'earlier', title: 'A' })]
+  const result = Model.dueNotifications(list, NOW, {}, {})
+  assert.deepEqual(result.due.map(t => t.id), ['earlier', 'late'])
+})
+
+// --- notification wording ------------------------------------------------
+
+test('one task is its own notification: title as the summary, due time under it', () => {
+  const args = Model.notifyArgs([at(0, { id: 'a', title: 'Standup' })], NOW)
+  assert.deepEqual(args.slice(0, 5), ['-a', 'TickTick', '-u', 'normal', '--'])
+  assert.equal(args[5], 'Standup')
+  assert.equal(args[6], 'Due 14:00')
+})
+
+test('several tasks become one notification, not one popup each', () => {
+  const args = Model.notifyArgs([
+    at(0, { id: 'a', title: 'Standup' }),
+    at(0, { id: 'b', title: 'Ship it' })
+  ], NOW)
+  assert.equal(args[5], '2 tasks due')
+  assert.deepEqual(args[6].split('\n'), ['14:00  Standup', '14:00  Ship it'])
+})
+
+test('a long batch lists the first few and counts the rest', () => {
+  const many = []
+  for (let i = 0; i < 8; i++) many.push(at(0, { id: 'n' + i, title: 'Task ' + i }))
+  const args = Model.notifyArgs(many, NOW)
+  const lines = args[6].split('\n')
+  assert.equal(lines.length, 6)
+  assert.equal(lines[5], '+3 more')
+})
+
+test('a title is defanged and elided before the daemon sees it', () => {
+  const args = Model.notifyArgs([at(0, { id: 'a', title: '<b>bold</b> ' + 'x'.repeat(80) })], NOW)
+  assert.ok(args[5].indexOf('<') === -1)
+  assert.equal(args[5].length, 60)
+  assert.ok(args[5].endsWith('…'))
+})
+
+test('nothing due is no notification at all', () => {
+  assert.equal(Model.notifyArgs([], NOW), null)
+  assert.equal(Model.notifyArgs(null, NOW), null)
+})
+
+// --- announced-keys file -------------------------------------------------
+
+test('the announced-keys file survives an empty, truncated, or wrong-shaped file', () => {
+  assert.deepEqual(Model.parseNotified(''), {})
+  assert.deepEqual(Model.parseNotified('{"a@1":tru'), {})
+  assert.deepEqual(Model.parseNotified('[1,2]'), {})
+  assert.deepEqual(Model.parseNotified('null'), {})
+  assert.deepEqual(Model.parseNotified('{"a@1":true,"b@2":false}'), { 'a@1': true })
+})
+
+test('a saved map round-trips through the file the service writes', () => {
+  const result = Model.dueNotifications([at(-1, { id: 'a' })], NOW, {}, {})
+  assert.deepEqual(Model.parseNotified(JSON.stringify(result.notified)), result.notified)
+})
+
+// --- quick-add preview ---------------------------------------------------
+
+test('the preview says which day and hour the line would land on', () => {
+  const p = t => Model.quickAddPreview(Model.parseQuickAdd(t), false)
+  assert.equal(p('Call mum at 9pm'), 'Today · 21:00')
+  assert.equal(p('Pay rent tomorrow'), 'Tomorrow')
+  assert.equal(p('Dentist on 2026-09-12 14:00'), '2026-09-12 · 14:00')
+})
+
+test('a duration is previewed as the range, with the panel\'s own dash', () => {
+  assert.equal(
+    Model.quickAddPreview(Model.parseQuickAdd('Meeting today 8:30-9:30'), false),
+    'Today · 08:30–09:30')
+})
+
+test('an undated line previews the day it will actually land on', () => {
+  // Adding always sends a due date, so "no date" is not "no due date".
+  assert.equal(Model.quickAddPreview(Model.parseQuickAdd('Buy milk'), false), 'Today')
+})
+
+test('an undated edit says the task keeps its own date, because it does', () => {
+  assert.equal(Model.quickAddPreview(Model.parseQuickAdd('Buy milk'), true), 'Date unchanged')
+  assert.equal(Model.quickAddPreview(Model.parseQuickAdd('Buy milk tomorrow'), true), 'Tomorrow')
+})
+
+test('a line that would create nothing previews nothing', () => {
+  assert.equal(Model.quickAddPreview(Model.parseQuickAdd(''), false), '')
+  assert.equal(Model.quickAddPreview(Model.parseQuickAdd('   #tag  '), false), '')
+  assert.equal(Model.quickAddPreview(null, false), '')
+})
+
+test('the line an edit pre-fills previews as the task it came from', () => {
+  const line = Model.editLineFor(localSpan('21:00', '22:30'))
+  assert.equal(Model.quickAddPreview(Model.parseQuickAdd(line), true), 'Today · 21:00–22:30')
 })

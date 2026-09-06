@@ -415,14 +415,21 @@ var PRIORITY_WORDS = {
 var DATE_WORD = "(today|tomorrow|yesterday|\\d{4}-\\d{2}-\\d{2})"
 // A bare "9" is deliberately not a time — a title can end with a number.
 // An hour must carry a colon ("21:00", "9:30am") or a meridiem ("9pm").
-var TIME_WORD = "(\\d{1,2}:\\d{2}(?:am|pm)?|\\d{1,2}(?:am|pm))"
+// The space in "9 pm" is optional because that is how people type it; the
+// meridiem still has to end the line, so "Buy 2 amps" is not 02:00.
+var TIME_WORD = "(\\d{1,2}:\\d{2}(?:\\s*(?:am|pm))?|\\d{1,2}\\s*(?:am|pm))"
 var TIME_RANGE = TIME_WORD + "(?:\\s*-\\s*" + TIME_WORD + ")?"
-var LEAD = "\\s(?:for\\s+|on\\s+|due\\s+|by\\s+)?"
+// Filler that belongs to the date rather than the title. Without it, "notes
+// for today" becomes a task called "notes for" — and "at", the most natural
+// word before a clock, used to be the one left stranded there.
+var LEAD = "\\s(?:for\\s+|on\\s+|due\\s+|by\\s+|at\\s+|@\\s*)?"
 
 // "9pm" → "21:00", "9:30am" → "09:30". Anything that is not a real clock
 // returns null, and the token stays in the title rather than being eaten.
 function toClock24(token) {
-  var text = String(token).toLowerCase()
+  // "1:33 am" and "1:33am" are the same clock; the space is the typist's,
+  // not the grammar's.
+  var text = String(token).toLowerCase().replace(/\s+/g, "")
 
   var clock = text.match(/^(\d{1,2}):(\d{2})(am|pm)?$/)
   if (clock) {
@@ -478,7 +485,11 @@ function parseQuickAdd(text) {
   var endClock = null
   var endGiven = false
 
-  var dateAndTime = rest.match(new RegExp(LEAD + DATE_WORD + "\\s+" + TIME_RANGE + "\\s*$", "i"))
+  // LEAD twice, not once: the filler can sit before the date ("due tomorrow")
+  // and again before the clock ("tomorrow at 9:15"). With a plain space here,
+  // "tomorrow at 9:15" matched only the clock and left the day in the title —
+  // a task named "Standup tomorrow", scheduled today.
+  var dateAndTime = rest.match(new RegExp(LEAD + DATE_WORD + LEAD + TIME_RANGE + "\\s*$", "i"))
   var dateOnly = dateAndTime ? null : rest.match(new RegExp(LEAD + DATE_WORD + "\\s*$", "i"))
   var timeOnly = dateAndTime || dateOnly ? null : rest.match(new RegExp(LEAD + TIME_RANGE + "\\s*$", "i"))
 
@@ -594,6 +605,25 @@ function quickAddArgs(text) {
   return args
 }
 
+// What the line in the field is about to create, as one short line under it.
+// The grammar is narrow on purpose — a clock it does not recognise stays in
+// the title, and the task quietly lands at midnight — so the field says what
+// it understood while there is still time to fix it.
+//
+// `editing` matters: an add always sends a due date, so an undated line lands
+// today, while an edit sends one only when the line carries a date and leaves
+// the task's own schedule alone otherwise.
+var DUE_WORD_LABELS = { today: "Today", tomorrow: "Tomorrow", yesterday: "Yesterday" }
+
+function quickAddPreview(parsed, editing) {
+  if (!parsed || parsed.title === "") return ""
+  if (editing && !parsed.dueGiven) return "Date unchanged"
+  var label = DUE_WORD_LABELS[parsed.due] || String(parsed.due)
+  if (!parsed.time) return label
+  // The en dash a duration wears everywhere else in the panel.
+  return label + " · " + String(parsed.time).replace("-", "–")
+}
+
 // ---- due tiers ---------------------------------------------------------
 
 // TickTick has no colour for "overdue" or "today" — every client paints that
@@ -604,6 +634,143 @@ function dueTier(task, now) {
   var due = taskDueDate(task)
   if (!due) return "upcoming"
   return dateStamp(due) === dateStamp(now || new Date()) ? "today" : "upcoming"
+}
+
+// ---- due notifications -------------------------------------------------
+
+// How far back a reminder still counts as news. A check is often the first
+// one in a while — the shell restarts on every theme or config change, and a
+// laptop suspends — so without a floor the first pass after a gap would
+// announce the whole morning at once. Too tight a floor loses the reminder
+// that fell in the gap instead, which is why this is an hour and not a
+// minute.
+var NOTIFY_CATCHUP_MINUTES = 60
+
+// How many titles a batched notification lists before it starts counting.
+var NOTIFY_BODY_LINES = 5
+
+// What "already announced" is keyed on. Not the id: a recurring task keeps
+// its id and rolls its due date forward on completion, so an id alone would
+// announce a daily task once and never again. Rescheduling earns a fresh
+// reminder for the same reason — the moment is what was announced, not the
+// row.
+function notifyKey(task) {
+  var when = taskTimeKey(task)
+  if (!task || !task.id || !when) return ""
+  return String(task.id) + "@" + when.getTime()
+}
+
+// Which tasks have just come due, and the announced-keys map to keep.
+//
+// The whole state transition lives here rather than in the service, so what
+// is announced once and only once is testable without a shell: the caller
+// spawns a process and saves `notified` back, and has no decisions of its
+// own to get wrong.
+//
+// `options` carries `leadMinutes` (announce this far ahead of the moment),
+// `catchupMinutes` (overridable for tests), and `skipIds` — the completions
+// held in the undo window, whose rows are already gone from the panel while
+// the cache catches up.
+function dueNotifications(tasks, now, notified, options) {
+  var opts = options || {}
+  var nowMs = (now || new Date()).getTime()
+  var leadMs = Math.max(0, Number(opts.leadMinutes) || 0) * 60000
+  var catchupMs = Math.max(1, Number(opts.catchupMinutes) || NOTIFY_CATCHUP_MINUTES) * 60000
+  var seen = notified || {}
+  var skip = opts.skipIds || {}
+
+  var due = []
+  var keep = {}
+
+  for (var i = 0; i < (tasks || []).length; i++) {
+    var task = tasks[i]
+    if (!isOpen(task)) continue
+
+    // An all-day task's due "time" is midnight, which is not a moment
+    // anyone wants to be woken by. Dated-not-timed work is what the bar
+    // count is for.
+    if (task.isAllDay) continue
+
+    // A duration is announced when it begins, not when it ends: taskTimeKey
+    // already answers "the instant this happens", so a meeting 8:30-9:30
+    // arrives at 8:30 rather than as it finishes.
+    var when = taskTimeKey(task)
+    if (!when) continue
+
+    var fireMs = when.getTime() - leadMs
+    if (fireMs > nowMs) continue
+
+    // Too old to be news, and deliberately not recorded: the clock only
+    // moves forward, so this can never come back around and claim a slot in
+    // the map. That is also what bounds the map — everything in it fired
+    // within the catch-up window, and falls out on the pass after.
+    if (nowMs - fireMs > catchupMs) continue
+
+    var key = notifyKey(task)
+    if (key === "") continue
+
+    if (seen[key]) {
+      keep[key] = true
+      continue
+    }
+    if (skip[String(task.id)]) continue
+
+    keep[key] = true
+    due.push(task)
+  }
+
+  due.sort(function(a, b) {
+    var aKey = taskTimeKey(a)
+    var bKey = taskTimeKey(b)
+    return (aKey ? aKey.getTime() : 0) - (bKey ? bKey.getTime() : 0)
+  })
+
+  return { due: due, notified: keep }
+}
+
+// The argv for notify-send, or null when there is nothing to say.
+//
+// One notification per batch, not one per task: several tasks cross the line
+// together often enough — at startup, on resume, on the hour — and five
+// stacked popups for five o'clock is the failure mode this shape avoids.
+function notifyArgs(due, now) {
+  if (!due || due.length === 0) return null
+
+  var summary
+  var body
+  if (due.length === 1) {
+    summary = plainText(elide(String(due[0].title || "Task"), 60))
+    body = "Due " + dueLabel(due[0], now)
+  } else {
+    summary = due.length + " tasks due"
+    var lines = []
+    for (var i = 0; i < due.length && i < NOTIFY_BODY_LINES; i++) {
+      lines.push(dueLabel(due[i], now) + "  " + plainText(elide(String(due[i].title || "Task"), 48)))
+    }
+    if (due.length > NOTIFY_BODY_LINES) lines.push("+" + (due.length - NOTIFY_BODY_LINES) + " more")
+    body = lines.join("\n")
+  }
+
+  // "--" because a title someone began with a dash is a title, not an
+  // option. plainText for the same reason the bar label uses it: the summary
+  // is server-provided text headed for a notification daemon that renders
+  // markup.
+  return ["-a", "TickTick", "-u", "normal", "--", summary, body]
+}
+
+// The announced-keys file, read back the way parseCache reads its own: small,
+// but still a file on disk that a full filesystem could have truncated.
+function parseNotified(text) {
+  if (!text) return {}
+  try {
+    var parsed = JSON.parse(text)
+    if (!parsed || typeof parsed !== "object" || parsed instanceof Array) return {}
+    var out = {}
+    for (var key in parsed) if (parsed[key]) out[key] = true
+    return out
+  } catch (e) {
+    return {}
+  }
 }
 
 // ---- habits ------------------------------------------------------------
@@ -922,10 +1089,15 @@ if (typeof module !== "undefined") {
     tagColor: tagColor,
     tagLabel: tagLabel,
     dueTier: dueTier,
+    notifyKey: notifyKey,
+    dueNotifications: dueNotifications,
+    notifyArgs: notifyArgs,
+    parseNotified: parseNotified,
     syncIntervalSeconds: syncIntervalSeconds,
     syncIntervalLabels: syncIntervalLabels,
     parseQuickAdd: parseQuickAdd,
     quickAddArgs: quickAddArgs,
+    quickAddPreview: quickAddPreview,
     editLineFor: editLineFor,
     editArgs: editArgs,
     projectName: projectName,

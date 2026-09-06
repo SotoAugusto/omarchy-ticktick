@@ -26,6 +26,12 @@ Item {
   // has the same ones, so whichever arrives first is as good as any.
   property var settings: ({})
 
+  // A panel hands these over a moment after the service mounts, and again
+  // whenever they change — turning notifications on should take effect then
+  // rather than at the next minute boundary. Repeat calls are free: the
+  // announced-keys map makes the check idempotent.
+  onSettingsChanged: checkDueNotifications()
+
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
     return value === undefined || value === null ? fallback : value
@@ -56,6 +62,9 @@ Item {
       root.pendingIds = ({})
       root.pendingHabitIds = ({})
       root.pendingAdds = []
+      // A sync can pull in a task that is due already, which should not wait
+      // for the next minute boundary to be announced.
+      root.checkDueNotifications()
     }
     onLoadFailed: root.cache = Model.parseCache("")
   }
@@ -63,7 +72,12 @@ Item {
   SystemClock {
     id: clock
     precision: SystemClock.Minutes
-    onDateChanged: root.nowDate = date
+    onDateChanged: {
+      root.nowDate = date
+      // This wakeup already exists for the bar's labels; the due check rides
+      // it rather than adding a timer of its own.
+      root.checkDueNotifications()
+    }
   }
 
   // ---- sync --------------------------------------------------------------
@@ -300,6 +314,105 @@ Item {
       root.undoTick++
       root.flushExpired()
     }
+  }
+
+  // ---- due notifications -------------------------------------------------
+  //
+  // The bar count is a thing you have to look at. This is the push half: when
+  // a task's moment arrives, the desktop says so.
+  //
+  // Nothing here polls. The clock above already wakes once a minute to move
+  // `nowDate`, so the check rides along; a timer of its own would be a second
+  // wakeup source, unaligned to the minute, for no better answer.
+
+  readonly property bool notifiesDue: setting("notifyOnDue", false) === true
+  readonly property int notifyLeadMinutes: Math.max(0, parseInt(setting("notifyLeadMinutes", 0), 10) || 0)
+
+  // Which moments have already been announced. Kept on disk because the shell
+  // restarts on every theme or config change: held in memory alone, a reload
+  // at 14:31 would announce the 14:30 meeting a second time. Written only when
+  // something fires, so a quiet day costs no writes at all.
+  //
+  // It does not grow without bound. Model.dueNotifications rebuilds it from
+  // the current task list each pass and drops every key older than its
+  // catch-up window, so it holds what fired in the last hour — a handful of
+  // entries, not a session-long ledger.
+  property var notifiedKeys: ({})
+  property bool notifiedLoaded: false
+
+  property FileView notifiedFile: FileView {
+    path: root.statePath + "/notified.json"
+    atomicWrites: true
+    printErrors: false
+    onLoaded: {
+      root.notifiedKeys = Model.parseNotified(text())
+      root.notifiedLoaded = true
+      root.checkDueNotifications()
+    }
+    // No file yet is the ordinary first run, not an error.
+    onLoadFailed: {
+      root.notifiedKeys = ({})
+      root.notifiedLoaded = true
+      root.checkDueNotifications()
+    }
+  }
+
+  function checkDueNotifications() {
+    if (!notifiesDue) return
+    // Announcing before the file has been read would repeat whatever it
+    // holds; it lands within milliseconds of startup.
+    if (!notifiedLoaded) return
+
+    var tasks = cache.tasks || []
+    // An empty cache is a cache that has not loaded, not an empty account.
+    // Rebuilding the map from it would forget what was announced and say it
+    // all again when the tasks come back.
+    if (tasks.length === 0) return
+
+    var result = Model.dueNotifications(tasks, nowDate, notifiedKeys, {
+      leadMinutes: notifyLeadMinutes,
+      skipIds: pendingIds
+    })
+    notifiedKeys = result.notified
+    if (result.due.length === 0) return
+
+    // Saved before the notification is sent: a crash between the two costs a
+    // missed reminder, the other order costs a duplicate on every restart.
+    notifiedFile.setText(JSON.stringify(result.notified) + "\n")
+
+    var args = Model.notifyArgs(result.due, nowDate)
+    if (args) sendNotification(args)
+  }
+
+  // One notification per batch means one process per check at most, so this
+  // queue is only ever holding a second batch — the minute tick and a cache
+  // reload can land back to back, and a Process cannot be re-commanded while
+  // it runs.
+  property var notifyQueue: []
+
+  function sendNotification(args) {
+    if (notifyProc.running) {
+      notifyQueue = notifyQueue.concat([args])
+      return
+    }
+    notifyProc.command = ["notify-send"].concat(args)
+    notifyProc.running = true
+  }
+
+  function drainNotifyQueue() {
+    if (notifyQueue.length === 0) return
+    var queued = notifyQueue.slice()
+    var next = queued.shift()
+    notifyQueue = queued
+    notifyProc.command = ["notify-send"].concat(next)
+    notifyProc.running = true
+  }
+
+  Process {
+    id: notifyProc
+    // A missing libnotify is a setup problem, not a sync failure, so it stays
+    // out of the panel's error line — which is reserved for what the CLI said.
+    onExited: root.drainNotifyQueue()
   }
 
   // ---- focus timer -------------------------------------------------------

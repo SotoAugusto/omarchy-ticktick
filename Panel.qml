@@ -145,6 +145,15 @@ Panel {
     keyCatcher.forceActiveFocus()
   }
 
+  // What the line in the field would actually create, shown under it. The
+  // quick-add grammar is narrow on purpose, and a clock it does not recognise
+  // is not an error — the words stay in the title and the task lands at
+  // midnight, where an all-day task is never announced. This is the receipt
+  // that makes that visible before enter, which is what TickTick's own chip
+  // does for the same reason.
+  readonly property string quickAddHint:
+    Model.quickAddPreview(Model.parseQuickAdd(quickAdd.text), editingTaskId !== "")
+
   // One task open at a time. `o` and the row's chevron both write here; a
   // task without details never takes the slot, so there is nothing to
   // open and nothing to collapse.
@@ -678,7 +687,7 @@ Panel {
                     { key: "a", what: "add a task" },
                     { key: "#tag", what: "tag it — # is TickTick's own" },
                     { key: "!1 !2 !3", what: "priority: high, medium, low" },
-                    { key: "tomorrow", what: "a trailing date or time sets when \u2014 \"fri 9:30-11\"" }
+                    { key: "tomorrow", what: "a trailing date or time sets when \u2014 \"tomorrow at 9pm\"" }
                   ]
                 },
                 {
@@ -940,6 +949,17 @@ Panel {
             font.pixelSize: Style.font.bodySmall
             onAccepted: root.submitQuickAdd()
             Keys.onEscapePressed: root.cancelEdit()
+          }
+
+          Text {
+            width: parent.width
+            visible: quickAdd.visible && root.quickAddHint !== ""
+            text: root.quickAddHint
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            color: root.muted
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
           }
 
           // ---- tasks
