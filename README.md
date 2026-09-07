@@ -498,10 +498,45 @@ occurrence separately, so a later `reopen` cannot put that transaction back.
 An undo that never sends the request is the only one that is actually
 reversible.
 
-Recurring tasks themselves stay in TickTick for completion. This plugin's
-session API exposes only a generic task update, which closes the live series
-instead of rolling it forward; the panel and CLI refuse that destructive
-write and direct you to TickTick. Ordinary tasks still complete here.
+### Recurring tasks
+
+TickTick does not roll a recurring task forward on its server. Its own web
+client does it in two writes: it adds a *new* task holding the finished
+occurrence, and updates the live series back to not-done with its dates moved
+on. A generic v2 update sending only `status = 2` therefore does not complete
+an occurrence — it ends the series, and every future repetition with it.
+
+So completing a recurring task here sends that same pair in one `batch/task`
+call. The finished occurrence is a copy with a fresh id, its recurrence
+fields cleared and `repeatTaskId` pointing back at the series. The series
+keeps its id, stays open, and its start and due dates move by whole days in
+the task's own timezone — so a 9am task is still at 9am after the clocks
+change, and a duration survives the move. Subtask ticks, progress and focus
+summaries reset, because last week's are not this week's.
+
+That means the next occurrence date is computed here rather than by TickTick,
+which is the one part of this that can be silently wrong. It covers the
+repeats TickTick's picker builds: `DAILY`, `WEEKLY`, `MONTHLY` and `YEARLY`
+with an interval, `BYDAY` (including ordinals like `3MO` and `-1FR`),
+`BYMONTHDAY` (including `-1` for month-end), `BYMONTH`, `COUNT`, `UNTIL`, and
+"repeat from the day I finish". Anything else — TickTick's non-RFC `ERULE`
+repeats, lunar calendars, Ebbinghaus spacing, a series with no due date — is
+refused with a message rather than guessed at, and stays completable in
+TickTick. A refusal costs you one trip to another app; a wrong date silently
+reschedules a real task.
+
+An occurrence you skipped in TickTick is not landed on again: the series'
+excluded dates are read and stepped over rather than rolled back onto. A
+subtask carrying a date of its own moves by the same number of days, so it
+does not read as overdue the moment the task rolls over.
+
+A last occurrence completes plainly: an exhausted `COUNT` or a next date past
+`UNTIL` has nothing to roll forward, so it becomes an ordinary completion.
+Reopening is unchanged throughout — it never rolled anything forward.
+
+The finished occurrence does not carry the series' attachments. Those are
+server-side files owned by the live task, and pointing two records at one
+upload is worse than a completed copy without them.
 
 ## Focus timer
 
