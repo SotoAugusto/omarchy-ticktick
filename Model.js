@@ -641,8 +641,33 @@ function editLineFor(task, index) {
 // What the line means as an edit. Tags, priority, and the schedule are
 // always sent, because deleting "#work" (or the clock) from the line is how
 // a tag (or a duration) is removed; an undated, untimed line sends neither.
-function editArgs(taskId, text) {
+// The words the day and clock grammar takes off the end of a title.
+var TITLE_FILLER_TAIL = /^(?:\s+(?:for|on|by|due|at|@))+$/i
+
+// What an edit line means, given the name the task had when the field was
+// opened. The line is the title followed by its day, and "for", "on", "by" and
+// "due" in front of a day are filler — so a task called "Notes for" would come
+// back as "Notes" from an edit that never touched its name.
+//
+// The old name is kept only for exactly that loss: the parser dropped nothing
+// but trailing filler words, and the line still begins with the whole old
+// name. Anything else is the user's edit and is sent as typed — deleting the
+// repeated day word from "Standup today today 09:00" really renames the task,
+// and a title holding "!1" or "#42" was never a filler problem.
+function parseEdit(text, wasTitled) {
   var parsed = parseQuickAdd(text)
+  var before = wasTitled === undefined || wasTitled === null
+    ? "" : String(wasTitled).replace(/\s+/g, " ").trim()
+  if (before === "" || parsed.title === before) return parsed
+  var line = String(text || "").replace(/\s+/g, " ").trim()
+  if (before.indexOf(parsed.title) === 0
+      && TITLE_FILLER_TAIL.test(before.slice(parsed.title.length))
+      && line.indexOf(before + " ") === 0) parsed.title = before
+  return parsed
+}
+
+function editArgs(taskId, text, wasTitled) {
+  var parsed = parseEdit(text, wasTitled)
   if (parsed.title === "") return null
   var args = [
     "update", String(taskId),
@@ -1226,6 +1251,7 @@ if (typeof module !== "undefined") {
     quickAddPreview: quickAddPreview,
     editLineFor: editLineFor,
     editArgs: editArgs,
+    parseEdit: parseEdit,
     projectName: projectName,
     checkinFor: checkinFor,
     habitProgress: habitProgress,

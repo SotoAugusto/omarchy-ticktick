@@ -272,6 +272,9 @@ a place.
 node --test tests/model.test.js
 ```
 
+CI runs the same suite on every push to `master` and every pull request,
+along with a compile check of the CLI and a parse of `manifest.json`.
+
 `Model.js` holds every piece of logic that can be wrong without being
 visibly wrong — timezone handling on all-day due dates, streak counting
 across a day that is still open, overdue sorting — so it is plain JS with no

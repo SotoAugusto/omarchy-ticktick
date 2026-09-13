@@ -158,8 +158,9 @@ Panel {
   // midnight, where an all-day task is never announced. This is the receipt
   // that makes that visible before enter, which is what TickTick's own chip
   // does for the same reason.
-  readonly property string quickAddHint:
-    Model.quickAddPreview(Model.parseQuickAdd(quickAdd.text), editingTaskId !== "", editingTitle)
+  readonly property string quickAddHint: editingTaskId !== ""
+    ? Model.quickAddPreview(Model.parseEdit(quickAdd.text, editingTitle), true, editingTitle)
+    : Model.quickAddPreview(Model.parseQuickAdd(quickAdd.text), false, "")
 
   // One task open at a time. `o` and the row's chevron both write here; a
   // task without details never takes the slot, so there is nothing to
@@ -269,10 +270,11 @@ Panel {
 
     if (editingTaskId !== "") {
       var id = editingTaskId
+      var wasTitled = editingTitle
       editingTaskId = ""
       editingTitle = ""
       quickAdd.text = ""
-      svc.submitEdit(id, text)
+      svc.submitEdit(id, text, wasTitled)
       return
     }
 

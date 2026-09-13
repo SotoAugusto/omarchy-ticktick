@@ -293,8 +293,10 @@ Item {
     scheduleAction("checkin", habit.name, ["checkin", String(habit.id), "--toggle"], String(habit.id))
   }
 
-  function submitEdit(taskId, text) {
-    var args = Model.editArgs(taskId, text)
+  // `wasTitled` is the name the task had when its line was opened, so an edit
+  // that left the title alone keeps it exactly (see Model.parseEdit).
+  function submitEdit(taskId, text, wasTitled) {
+    var args = Model.editArgs(taskId, text, wasTitled)
     if (!args) return false
     runAction(args)
     return true

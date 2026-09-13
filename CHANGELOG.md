@@ -49,6 +49,11 @@
   hour in the new spaced form — `gym 6 - 7 am`, `10 to 11 am` — is left in
   the title rather than read as its end; the glued `gym 6 - 7am` reads as it
   always did.
+- Editing a task whose title ends in `for`, `on`, `by` or `due` no longer
+  drops that word. The edit line is read like quick add, where those words in
+  front of a day are filler, but a line that still begins with the task's own
+  title has not renamed it — so `e` then enter leaves *Notes for* as it was,
+  and so does changing its day.
 - The panel's own shortcut list no longer advertises `"fri 9:30-11"`, which
   never parsed: weekday names are not date words here, and a clock needs a
   colon or a meridiem.

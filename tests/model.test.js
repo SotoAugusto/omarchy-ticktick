@@ -773,6 +773,43 @@ test('the edit line round-trips through the add parser', () => {
   assert.equal(parsed.due, 'today')
 })
 
+test('an unchanged edit keeps a title that ends in "for", "on", "by" or "due"', () => {
+  // Quick add reads those words in front of a day as filler, and so does the
+  // edit line — but an edit knows the name the task had. A line that still
+  // begins with that name did not change it, whatever the day or tags did.
+  for (const word of ['for', 'on', 'by', 'due']) {
+    const title = 'Look ' + word
+    const t = { title, tags: ['work'], priority: 5, isAllDay: true, dueDate: localAllDay(0) }
+    const line = Model.editLineFor(t)
+    assert.equal(Model.parseEdit(line, title).title, title, word)
+    assert.deepEqual(Model.editArgs('id1', line, title).slice(0, 4), ['update', 'id1', '--title', title], word)
+    const moved = Model.parseEdit(title + ' #work !1 tomorrow', title)
+    assert.deepEqual([moved.title, moved.due], [title, 'tomorrow'], word)
+  }
+  // Renaming it is still renaming it.
+  assert.equal(Model.parseEdit('Notes today', 'Notes for').title, 'Notes')
+  assert.equal(Model.parseEdit('Nuts for today', 'Notes for').title, 'Nuts')
+  // Deleting the day keeps a filler-word name too, including "at" and "@".
+  assert.deepEqual(['Pay by 21:00', 'Look at 21:00', 'Ping @ 21:00'].map((l, i) =>
+    Model.parseEdit(l, ['Pay by', 'Look at', 'Ping @'][i]).title), ['Pay by', 'Look at', 'Ping @'])
+  assert.equal(Model.parseEdit('Pay by 21:00', 'Pay by').time, '21:00')
+  // Only filler is put back. Deleting a repeated day word from the title is a
+  // real rename, and so is dropping a literal "!1" — those were never lost to
+  // the grammar, so they are sent as typed and the hint says "Renaming".
+  assert.equal(Model.parseEdit('Standup today 09:00-10:00', 'Standup today').title, 'Standup')
+  assert.equal(Model.parseEdit('Call tomorrow 10:00', 'Call tomorrow').title, 'Call')
+  assert.equal(Model.parseEdit('Ship !1 today', 'Ship !1').title, 'Ship')
+  // And only when what the parser kept is the start of the old name: here the
+  // first word was read as a priority, so the rest is not a filler loss.
+  assert.equal(Model.parseEdit('!1 on for today', '!1 on for').title, 'on')
+  const moved = Model.parseEdit('Call mom at 6pm #family', 'Call mom at 6pm')
+  assert.equal(Model.quickAddPreview(moved, true, 'Call mom at 6pm'), 'Renaming to “Call mom” · Today · 18:00')
+
+  // Without the original name an edit reads exactly like quick add.
+  assert.deepEqual(Model.editArgs('id1', 'Look for today'), Model.editArgs('id1', 'Look for today', undefined))
+  assert.equal(Model.editArgs('id1', 'Look for today')[3], 'Look')
+})
+
 test('a title ending in "at" or a spaced "@" survives the round trip', () => {
   // The edit line is the title followed by its day, so any filler the grammar
   // takes in front of a day comes out of the title. "for", "on", "by" and
@@ -1468,7 +1505,10 @@ test('an edit that would rename the task says so before enter', () => {
   // edit that changed nothing then renames the task on the way out. The hint
   // is the only place that can be seen.
   const line = Model.editLineFor({ title: 'Notes for', tags: [], priority: 0, isAllDay: true, dueDate: localAllDay(0) })
-  assert.equal(Model.quickAddPreview(Model.parseQuickAdd(line), true, 'Notes for'), 'Renaming to “Notes” · Today')
+  assert.equal(Model.quickAddPreview(Model.parseEdit('Nuts today', 'Notes for'), true, 'Notes for'), 'Renaming to “Nuts” · Today')
+  // An unchanged line is read the way the edit will be sent, so it keeps its
+  // name and says nothing.
+  assert.equal(Model.quickAddPreview(Model.parseEdit(line, 'Notes for'), true, 'Notes for'), 'Today')
 
   // Silent when the title survives, so the warning means something.
   const kept = Model.editLineFor({ title: 'Renew cert', tags: [], priority: 0, isAllDay: true, dueDate: localAllDay(0) })
