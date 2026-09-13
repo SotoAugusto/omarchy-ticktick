@@ -108,7 +108,7 @@
         "key": "notifyOnDue",
         "type": "boolean",
         "label": "Notify when a task is due",
-        "description": "Send a desktop notification the moment a task's time arrives. Tasks with a date but no time are never announced — their due time is midnight. Needs notify-send on your PATH.",
+        "description": "Send a desktop notification the moment a task's time arrives. Tasks with a date but no time are never announced — their due time is midnight. Needs notify-send on your PATH, and reminders are only as fresh as your background sync.",
         "defaultValue": false
       },
       {
