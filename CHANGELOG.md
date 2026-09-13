@@ -1,5 +1,58 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Due notifications, off by default. Turn `notifyOnDue` on and the desktop
+  says so the moment a task's time arrives — the bar count is something you
+  have to look at, and this is the half that comes to you.
+  `notifyLeadMinutes` moves it earlier. A task with a duration is announced
+  when it **starts**, not as it ends; a task with a date but no time is never
+  announced, because its due time is midnight. Several tasks crossing at once
+  become one notification listing them rather than one popup each.
+
+  Nothing new polls: the check rides the clock the bar already runs once a
+  minute, and the only process it starts is `notify-send`. What has been
+  announced is keyed on the moment rather than the task, so a recurring task
+  that rolls forward — or one you reschedule — earns a fresh reminder, and
+  that record is kept in `~/.local/state/omarchy/ticktick/notified.json` so a
+  shell restart at 14:31 does not announce the 14:30 meeting again. A moment
+  is only announced within an hour of passing, so a laptop that slept all
+  morning reports the last hour and not the whole of it. Switching it on does
+  not replay what is already past, though a reminder still ahead of its moment
+  goes out; a task completed in the undo window stays quiet; and a reminder
+  `notify-send` could not deliver is tried again rather than counted as sent.
+
+- The quick-add field shows what it understood, under the line you are
+  typing: `Today · 21:00`, or plain `Today` when you typed no time. The
+  grammar is narrow and a clock it does not take is not an error — the words
+  stay in the title and the task lands all-day, which is also a task that
+  never notifies — so the hint says `time not recognised` when that happens,
+  names the task (`called “gym 6 -”`) when the text before a clock looks like
+  the start of a range, and leads with `Renaming to “…”` when an edit would
+  change a task's name. All of it is in front of you before enter rather than
+  after.
+
+### Fixed
+
+- Quick add takes the times people actually type. A space before the
+  meridiem works (`1:33 am`, not only `1:33am`), `at` and `@` join `for`,
+  `on`, `due` and `by` as filler in front of a clock, and the filler is
+  allowed between the day and the clock as well as before them — so
+  `Standup tomorrow at 9:15 am` is a task called *Standup*, due tomorrow
+  morning, where it used to be a task called *Standup tomorrow at 9:15 am*
+  due today with no time at all. `at` was the one preposition missing from
+  that list, and the one most likely to be typed. In front of a day word it
+  is left alone (`Look at today` is a task called *Look at*), and `@` counts
+  there only attached, as in `standup @tomorrow`. A range spelled with a bare
+  hour in the new spaced form — `gym 6 - 7 am`, `10 to 11 am` — is left in
+  the title rather than read as its end; the glued `gym 6 - 7am` reads as it
+  always did.
+- The panel's own shortcut list no longer advertises `"fri 9:30-11"`, which
+  never parsed: weekday names are not date words here, and a clock needs a
+  colon or a meridiem.
+
 ## 0.4.0 — 2026-08-30
 
 ### Added

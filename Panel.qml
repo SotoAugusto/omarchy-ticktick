@@ -127,6 +127,11 @@ Panel {
   // one input and one syntax to know.
   property string editingTaskId: ""
 
+  // The name the task had when the field was opened. The grammar can take a
+  // trailing word that was part of the title, so the hint needs something to
+  // compare against to say the edit is about to rename it.
+  property string editingTitle: ""
+
   function beginEdit() {
     if (cursor < 0 || cursor >= navRows.length) return
     var row = navRows[cursor]
@@ -134,6 +139,7 @@ Panel {
     var task = displayTasks[row.index]
     if (!task || !task.id) return
     editingTaskId = String(task.id)
+    editingTitle = String(task.title || "")
     quickAdd.text = Model.editLineFor(task)
     quickAdd.forceActiveFocus()
     quickAdd.selectAll()
@@ -141,9 +147,19 @@ Panel {
 
   function cancelEdit() {
     editingTaskId = ""
+    editingTitle = ""
     quickAdd.text = ""
     keyCatcher.forceActiveFocus()
   }
+
+  // What the line in the field would actually create, shown under it. The
+  // quick-add grammar is narrow on purpose, and a clock it does not recognise
+  // is not an error — the words stay in the title and the task lands at
+  // midnight, where an all-day task is never announced. This is the receipt
+  // that makes that visible before enter, which is what TickTick's own chip
+  // does for the same reason.
+  readonly property string quickAddHint:
+    Model.quickAddPreview(Model.parseQuickAdd(quickAdd.text), editingTaskId !== "", editingTitle)
 
   // One task open at a time. `o` and the row's chevron both write here; a
   // task without details never takes the slot, so there is nothing to
@@ -254,6 +270,7 @@ Panel {
     if (editingTaskId !== "") {
       var id = editingTaskId
       editingTaskId = ""
+      editingTitle = ""
       quickAdd.text = ""
       svc.submitEdit(id, text)
       return
@@ -413,6 +430,7 @@ Panel {
     cursor = -1
     cursorActive = false
     editingTaskId = ""
+    editingTitle = ""
     expandedTaskId = ""
     pendingItemIds = ({})
     quickAdd.text = ""
@@ -678,7 +696,7 @@ Panel {
                     { key: "a", what: "add a task" },
                     { key: "#tag", what: "tag it — # is TickTick's own" },
                     { key: "!1 !2 !3", what: "priority: high, medium, low" },
-                    { key: "tomorrow", what: "a trailing date or time sets when \u2014 \"fri 9:30-11\"" }
+                    { key: "tomorrow", what: "a trailing date or time sets when \u2014 \"tomorrow at 9pm\"" }
                   ]
                 },
                 {
@@ -940,6 +958,23 @@ Panel {
             font.pixelSize: Style.font.bodySmall
             onAccepted: root.submitQuickAdd()
             Keys.onEscapePressed: root.cancelEdit()
+          }
+
+          Text {
+            width: parent.width
+            // The line is held while the field is in use rather than only while
+            // there is something to say. Collapsing it with the hint made the
+            // task list jump down on the first keystroke and back up after every
+            // enter, which is the moment you are looking at that list to see
+            // the task land.
+            visible: quickAdd.visible && (quickAdd.activeFocus || quickAdd.text !== "")
+            opacity: root.quickAddHint !== "" ? 1 : 0
+            text: root.quickAddHint !== "" ? root.quickAddHint : " "
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            color: root.muted
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
           }
 
           // ---- tasks

@@ -20,6 +20,8 @@ turns urgent when something is late. Left click opens the panel.
 - Quick-add field — type a title, hit enter, it lands due today
 - **Undo window** — a completion or check-in is held for a few seconds before
   it is sent, so a misclick costs nothing
+- **Due notifications** — an optional desktop notification the moment a task's
+  time arrives, batched so five o'clock is one popup and not five
 - **Focus timer** — a pomodoro that uses your TickTick durations, counts down
   in the bar, and uploads each finished block to your focus statistics
 - Fully keyboard driven, with an in-panel shortcut list
@@ -33,6 +35,7 @@ turns urgent when something is late. Left click opens the panel.
 | Omarchy 4 (Quattro) with Quickshell | yes | the shell that hosts the plugin |
 | `python3` | yes | the CLI; standard library only, no pip packages |
 | `curl` | no | not used — the CLI speaks HTTP through `urllib` |
+| `notify-send` (libnotify) | no | only for due notifications, which are off by default |
 | A TickTick account | yes | free accounts work; habits need TickTick's own habit feature |
 
 No external Python packages, no build step, and nothing is compiled.
@@ -197,6 +200,8 @@ Configure in Setup > Plugins, or inline on the bar entry in
 | `showHabits` | `true` | Show the habit section. |
 | `maxTasks` | `12` | Rows before the list is capped with a "+N more". |
 | `barLabel` | `Count` | `Count`, `Next` (next task's title, scrolling), or `Icon`. Right-click the widget to cycle it. |
+| `notifyOnDue` | `false` | Notify when a task's time arrives. Off by default. |
+| `notifyLeadMinutes` | `0` | Notify this many minutes early instead. |
 | `showPomo` | `true` | Focus section, and a live countdown in the bar. |
 | `undoSeconds` | `6` | How long an action is held before sending. `0` disables undo. |
 | `pomoMinutes` | `0` | Focus length. `0` follows your TickTick account. |
@@ -272,6 +277,23 @@ visibly wrong — timezone handling on all-day due dates, streak counting
 across a day that is still open, overdue sorting — so it is plain JS with no
 QML imports and runs under node.
 
+What a notification decides — which moment fires, once, and what the popup
+says — is in there too. That it actually reaches the desktop is one D-Bus
+call away from being observable, so check it directly rather than by waiting
+for 14:30:
+
+```bash
+dbus-monitor --session "interface='org.freedesktop.Notifications',member='Notify'"
+```
+
+With that running, add a task due a minute ago and force a sync — the call
+should appear once, and not again when the shell restarts:
+
+```bash
+bin/omarchy-ticktick add "Test" --due today --time $(date -d '1 min ago' +%H:%M)
+bin/omarchy-ticktick sync
+```
+
 ## Background sync
 
 The interval is a short list rather than a number field, because the useful
@@ -303,6 +325,71 @@ omarchy-ticktick sync --max-age 285   # what the timer runs
 
 `Only when opened` still syncs once shortly after the shell starts —
 otherwise the bar would show a stale count until you first clicked it.
+
+## Due notifications
+
+Off by default. Turn `notifyOnDue` on and the desktop says so when a task's
+time arrives, through `notify-send` — the count in the bar is something you
+have to look at, and this is the half that comes to you.
+
+```json
+{ "id": "io.github.sotoaugusto.ticktick", "notifyOnDue": true, "notifyLeadMinutes": 10 }
+```
+
+What it announces, and what it deliberately does not:
+
+| | |
+|---|---|
+| A task with a time | at that time, or `notifyLeadMinutes` before it |
+| A task with a duration | when it **starts** — a meeting `8:30–9:30` arrives at 8:30, not as it ends |
+| A task with a date but no time | never: its due "time" is midnight, which is not a moment worth waking anyone for |
+| Several at once | one notification listing them, not one popup each |
+
+Whether a task got a time at all is visible as you type it: the quick-add
+field shows `Today · 21:00` when it took the clock, and plain `Today` when it
+did not — which is the difference between a reminder that fires and one that
+never does.
+
+It rides the clock the bar already runs, so nothing new polls: the check is a
+pass over the cached task list once a minute, and the only process it ever
+starts is `notify-send` itself, and only when there is something new to say. A
+sync that pulls in a task that is already due announces it there and then,
+rather than holding it to the next minute boundary.
+
+Two things keep it from repeating itself or shouting. What has been announced
+is keyed on the **moment**, not the task — a recurring task rolls its due date
+forward and earns a fresh reminder, and so does one you reschedule — and that
+record is written to
+`~/.local/state/omarchy/ticktick/notified.json`, because the shell restarts on
+every theme or config change and an in-memory record would announce your 14:30
+meeting again at 14:31. And a moment is only announced within an hour of
+passing: a laptop that was asleep all morning tells you about the last hour,
+not about all of it, and never about yesterday.
+
+The cache is what it reads, so a task completed elsewhere can still be
+announced if it comes due inside the sync interval — the notification is as
+fresh as the count in the bar beside it. Completing a task here suppresses its
+notification immediately, and it stays suppressed while the completion waits
+out its undo window, even if a sync lands in the meantime.
+
+That cuts both ways, and it is the one thing worth setting up deliberately: a
+reminder can only be as current as your last sync. With **Background sync** set
+to `Only when opened`, the cache is refreshed once at startup and then only
+when you open the panel, so a task you added on your phone this morning may
+never be announced at all. If you want reminders you can rely on, leave
+background sync on an interval shorter than the notice you expect.
+
+Switching notifications on does not replay the morning at you. The first check
+after you switch them on — for the first time, or off and on again — remembers
+whatever is already past as announced without showing it, because nothing can
+have been missed before the feature was armed. A reminder whose lead time has
+started but whose moment is still ahead is not past, and goes out as usual. A
+shell restart is the other case: it catches up on what came due while the shell
+was down, within the hour, which is what the record on disk is for.
+
+If `notify-send` is missing or no notification daemon is listening, nothing is
+recorded as announced, so the reminders are still waiting once you install one
+rather than having been quietly used up.
 
 ## Why writes feel immediate
 
@@ -371,8 +458,9 @@ Renew the TLS cert #work !1 tomorrow
 | `!1` `!2` `!3` | priority: high, medium, low | this plugin's |
 | `!high` `!med` `!low` | the same, spelled out | this plugin's |
 | trailing `today` / `tomorrow` / `yesterday` / `2026-09-01` | sets the due date | TickTick parses dates from text too |
-| trailing `21:00` / `9pm` / `9:30am` | sets a due hour | TickTick parses times too |
-| trailing `21:00-22:30` / `9am-5pm` | sets a duration; an end not after the start spills into the next day | this plugin's |
+| trailing `21:00` / `9pm` / `9 pm` / `9:30am` | sets a due hour | TickTick parses times too |
+| trailing `21:00-22:30` / `9am-5pm` | sets a duration — both ends must be clocks; an end not after the start spills into the next day | this plugin's |
+| `on` `for` `due` `by` before either; `at` and `@` before a clock; `@` attached to a day (`@tomorrow`) | filler; goes with the date, not the title | TickTick swallows these too |
 
 Everything not consumed becomes the title, so the line above creates *Renew
 the TLS cert*, tagged `work`, high priority, due tomorrow. With no syntax at
@@ -387,11 +475,28 @@ TickTick has no quick-add symbol for priority — it is still an open request
 on their forum — so `!` is defined here rather than borrowed. `#` and the
 date words match what TickTick already taught you.
 
-Three details worth knowing:
+Five details worth knowing:
 
 - A date word only counts at the **end**. `Plan today standup` keeps its
   word; `Standup notes for today` does not, and the preposition goes with the
-  date rather than being left dangling.
+  date rather than being left dangling. `at` and `@` do the same in front of
+  a clock, so `Call mum at 9pm` is a call at nine, not a task called
+  "Call mum at" — but not in front of a day, where they usually end a title:
+  `Look at today` is a task called *Look at*.
+- A duration is a hyphen between two **clocks**. In `gym 6 - 7 am` the `6` is
+  a number, not six o'clock, so the line stays in the title and the hint says
+  the time was not recognised, rather than the task landing at 07:00 — the end
+  of the block — called "gym 6 -". `to`, `till` and an en dash read the same
+  way. The glued `gym 6 - 7am` is still read as it always was, because
+  `Level 3 - 9pm` has the same shape and is a real title with a real time;
+  the hint then names the task, `called “gym 6 -”`, so a half-read range
+  shows before enter.
+- The line under the field says what it understood — `Today · 21:00`, or
+  just `Today` when you typed no time. A clock it would not take says so —
+  `Today · time not recognised` — and the words stay in the title, so the task
+  lands all-day and never notifies. When an edit would change a task's name,
+  the hint leads with `Renaming to “…”`. The hint is how you see all of that
+  before enter, rather than after.
 - An unrecognised `!token` is left alone in the title.
 - Tags are lowercased, because that is the key tasks reference them by.
 
@@ -540,6 +645,8 @@ Unofficial and unaffiliated: not endorsed by or supported by TickTick
   subtasks, no moving between projects — do those in TickTick.
 - Habit check-ins are all-or-step. Arbitrary values need `--value`.
 - One account.
+- Due notifications need a task to carry a time. A task dated today with no
+  time is counted in the bar but never announced.
 - The focus timer lives in the shell process. Restarting the shell loses a
   running block; it is not persisted.
 - A stopped focus block is discarded, never logged.
