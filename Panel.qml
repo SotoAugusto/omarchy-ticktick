@@ -162,6 +162,16 @@ Panel {
     ? Model.quickAddPreview(Model.parseEdit(quickAdd.text, editingTitle), true, editingTitle)
     : Model.quickAddPreview(Model.parseQuickAdd(quickAdd.text), false, "")
 
+  // The second line: what shift+enter would do instead, or "". It stays off the
+  // first line so that line keeps all its room for what plain enter will do.
+  readonly property string quickAddOfferHint: Model.quickAddOfferHint(quickAddOffer,
+    editingTaskId !== "" ? Model.parseEdit(quickAdd.text, editingTitle) : Model.parseQuickAdd(quickAdd.text),
+    editingTaskId !== "", editingTitle, nowDate)
+
+  // What shift+enter would turn the line into: the range reading of a line
+  // that ends in half a range ("gym 6 - 7am"), or null. See Model.halfRangeOffer.
+  readonly property var quickAddOffer: Model.halfRangeOffer(quickAdd.text)
+
   // One task open at a time. `o` and the row's chevron both write here; a
   // task without details never takes the slot, so there is nothing to
   // open and nothing to collapse.
@@ -261,6 +271,22 @@ Panel {
       copyProc.stdinEnabled = true
       root.showCopyNote(code === 0 ? "Copied to clipboard" : "wl-copy is required to copy")
     }
+  }
+
+  // Shift+enter takes the offered range, then submits as usual. With nothing on
+  // offer it is plain enter, so the key never silently does nothing.
+  function submitQuickAddOffer() {
+    if (quickAddOffer) quickAdd.text = quickAddOffer.line
+    submitQuickAdd()
+  }
+
+  function quickAddReturn(event) {
+    if (!(event.modifiers & Qt.ShiftModifier)) {
+      event.accepted = false
+      return
+    }
+    event.accepted = true
+    submitQuickAddOffer()
   }
 
   function submitQuickAdd() {
@@ -698,7 +724,8 @@ Panel {
                     { key: "a", what: "add a task" },
                     { key: "#tag", what: "tag it — # is TickTick's own" },
                     { key: "!1 !2 !3", what: "priority: high, medium, low" },
-                    { key: "tomorrow", what: "a trailing date or time sets when \u2014 \"tomorrow at 9pm\"" }
+                    { key: "tomorrow", what: "a trailing date or time sets when \u2014 \"tomorrow at 9pm\"" },
+                    { key: "\u21e7 enter", what: "take the offered range \u2014 \"gym 6 - 7am\" \u2192 06:00\u201307:00" }
                   ]
                 },
                 {
@@ -959,6 +986,8 @@ Panel {
             font.family: Style.font.family
             font.pixelSize: Style.font.bodySmall
             onAccepted: root.submitQuickAdd()
+            Keys.onReturnPressed: function(event) { root.quickAddReturn(event) }
+            Keys.onEnterPressed: function(event) { root.quickAddReturn(event) }
             Keys.onEscapePressed: root.cancelEdit()
           }
 
@@ -972,6 +1001,21 @@ Panel {
             visible: quickAdd.visible && (quickAdd.activeFocus || quickAdd.text !== "")
             opacity: root.quickAddHint !== "" ? 1 : 0
             text: root.quickAddHint !== "" ? root.quickAddHint : " "
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            color: root.muted
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+
+          Text {
+            width: parent.width
+            // The offer's own line, held together with the one above: an offer
+            // appears the moment "am" is typed, and the list must not move then
+            // any more than it does on the first keystroke.
+            visible: quickAdd.visible && (quickAdd.activeFocus || quickAdd.text !== "")
+            opacity: root.quickAddOfferHint !== "" ? 1 : 0
+            text: root.quickAddOfferHint !== "" ? root.quickAddOfferHint : " "
             textFormat: Text.PlainText
             elide: Text.ElideRight
             color: root.muted

@@ -690,6 +690,93 @@ function quickAddArgs(text) {
   return args
 }
 
+// ---- range offer ----------------------------------------------------------
+
+// "gym 6 - 7am" is a range to whoever typed it, and a title ending in "6 -" to
+// the grammar, which only reads a range when both ends are clocks. It cannot
+// just start guessing: "Level 3 - 9pm" has the same shape and means exactly
+// what the grammar reads, and every guess that reads it as a range is a
+// reminder that worked yesterday landing at the wrong time today. So the field
+// does not guess. The hint offers the range reading, and shift+enter takes it
+// by rewriting the line into a spelling the grammar reads one way only
+// ("gym 6am-7am"). Plain enter is unchanged.
+var RANGE_TAIL = /(^|\s)(\d{1,2})(?::(\d{2}))?\s*(am|pm)?(\s*[-–—]\s*|\s+(?:to|til|till|until|thru|through)\s+)(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*$/i
+
+// Longest block worth offering. A workday ("shift 9 - 5pm") fits; eighteen
+// hours ("Level 3 - 21:00") is not a range anyone meant.
+var RANGE_OFFER_MAX_MINUTES = 8 * 60
+
+// Tags and priority may trail the range ("gym 6 - 7am #fit !1"). Quick add
+// strips them from anywhere, so the range is looked for in front of them and
+// they go back after it.
+var TRAILING_MARKS = /(?:\s+(?:#[^\s#]+|![A-Za-z0-9]+))+\s*$/
+
+function offerClockMinutes(hour, minute, meridiem) {
+  var h = Number(hour)
+  var m = minute === undefined || minute === "" ? 0 : Number(minute)
+  if (isNaN(h) || isNaN(m) || m > 59) return null
+  if (meridiem) {
+    if (h < 1 || h > 12) return null
+    h = h % 12
+    if (meridiem === "pm") h += 12
+  } else if (h > 23) {
+    return null
+  }
+  return h * 60 + m
+}
+
+function offerClockSpelled(total, withMeridiem) {
+  var h = Math.floor(total / 60)
+  var m = total % 60
+  if (!withMeridiem) return pad2(h) + ":" + pad2(m)
+  return (h % 12 === 0 ? 12 : h % 12) + (m ? ":" + pad2(m) : "") + (h >= 12 ? "pm" : "am")
+}
+
+// What shift+enter would turn the line into — { line, time, due, title } — or
+// null when the line does not end in half a range, or already reads as the
+// range it would get.
+function halfRangeOffer(text) {
+  var line = String(text || "")
+  var marks = line.match(TRAILING_MARKS)
+  var core = marks ? line.slice(0, marks.index) : line
+  var suffix = marks ? marks[0].replace(/\s+$/, "") : ""
+  var tail = core.match(RANGE_TAIL)
+  if (!tail) return null
+  var startMeridiem = tail[4] ? tail[4].toLowerCase() : ""
+  var endMeridiem = tail[8] ? tail[8].toLowerCase() : ""
+  // The end has to be a clock on its own; "gym 6 - 7" is two numbers.
+  if (!endMeridiem && tail[7] === undefined) return null
+  var end = offerClockMinutes(tail[6], tail[7], endMeridiem)
+  if (end === null) return null
+
+  // A bare start takes the end's meridiem, or the other one across noon
+  // ("11 - 1pm") — whichever makes a real block.
+  var tries = startMeridiem ? [startMeridiem]
+    : endMeridiem ? [endMeridiem, endMeridiem === "am" ? "pm" : "am"]
+    : [""]
+  var spelled = startMeridiem !== "" || endMeridiem !== ""
+  var current = parseQuickAdd(line)
+  for (var i = 0; i < tries.length; i++) {
+    var start = offerClockMinutes(tail[2], tail[3], tries[i])
+    if (start === null) continue
+    // An end not after the start runs into the next day ("shift 11 - 7am"),
+    // which is how the grammar reads the full spelling too.
+    var length = end - start
+    if (length <= 0) length += 24 * 60
+    if (length > RANGE_OFFER_MAX_MINUTES) continue
+    var time = offerClockSpelled(start, false) + "-" + offerClockSpelled(end, false)
+    if (current.time === time) return null
+    var rewritten = core.slice(0, tail.index + tail[1].length)
+      + offerClockSpelled(start, spelled) + "-" + offerClockSpelled(end, spelled) + suffix
+    // Only offer what the grammar will actually read back, name intact.
+    var reread = parseQuickAdd(rewritten)
+    if (reread.title !== "" && reread.time === time) {
+      return { line: rewritten, time: time, due: reread.due, title: reread.title }
+    }
+  }
+  return null
+}
+
 // What the line in the field is about to create, as one short line under it.
 // The grammar is narrow on purpose — a clock it does not recognise stays in
 // the title, and the task quietly lands at midnight — so the field says what
@@ -735,6 +822,48 @@ function quickAddPreview(parsed, editing, wasTitled) {
   }
 
   return renamed === "" ? when : renamed + " · " + when
+}
+
+// The calendar day a due word lands on, as a stamp.
+function dueWordStamp(word, now) {
+  var today = startOfDay(now || new Date())
+  var w = String(word || "today").toLowerCase()
+  if (w === "today") return dateStamp(today)
+  if (w === "tomorrow") return dateStamp(addDays(today, 1))
+  if (w === "yesterday") return dateStamp(addDays(today, -1))
+  var parts = w.split("-")
+  if (parts.length === 3) {
+    var day = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]))
+    if (!isNaN(day.getTime())) return dateStamp(day)
+  }
+  return null
+}
+
+// The second line under the field: what shift+enter would do instead, or ""
+// when it has nothing to offer. It has a line of its own so the first — what
+// plain enter will do, the receipt this field has always given — keeps all its
+// room. It names the day when taking the range lands the task on another one,
+// and, while editing, the name the task would come out with when that differs.
+function quickAddOfferHint(offer, parsed, editing, wasTitled, now) {
+  if (!offer) return ""
+  var said = "⇧ enter → "
+  // The day is named whenever taking the range lands the task on another day
+  // than plain enter would — compared as calendar days, so "2026-09-13" on the
+  // 13th is today — and always while editing a line with no date in it: plain
+  // enter leaves the task's own date alone there, but a range needs a day and
+  // sets one.
+  var keepsOwnDate = editing && parsed && !parsed.dueGiven
+  if (!parsed || keepsOwnDate || dueWordStamp(offer.due, now) !== dueWordStamp(parsed.due, now)) {
+    said += (DUE_WORD_LABELS[offer.due] || String(offer.due)) + " "
+  }
+  said += String(offer.time).replace("-", "–")
+  if (editing) {
+    var before = wasTitled === undefined || wasTitled === null
+      ? "" : String(wasTitled).replace(/\s+/g, " ").trim()
+    var after = parseEdit(offer.line, wasTitled).title
+    if (before !== "" && after !== before) said += " · renaming to “" + after + "”"
+  }
+  return said
 }
 
 // ---- due tiers ---------------------------------------------------------
@@ -1252,6 +1381,8 @@ if (typeof module !== "undefined") {
     editLineFor: editLineFor,
     editArgs: editArgs,
     parseEdit: parseEdit,
+    halfRangeOffer: halfRangeOffer,
+    quickAddOfferHint: quickAddOfferHint,
     projectName: projectName,
     checkinFor: checkinFor,
     habitProgress: habitProgress,

@@ -1522,6 +1522,89 @@ test('an edit that would rename the task says so before enter', () => {
   assert.equal(Model.quickAddPreview(Model.parseQuickAdd(spaced), true, 'Buy  milk '), 'Today')
 })
 
+test('a line ending in half a range is offered the range shift+enter would make', () => {
+  const o = t => { const x = Model.halfRangeOffer(t); return x && { line: x.line, time: x.time } }
+  assert.deepEqual(o('gym 6 - 7am'), { line: 'gym 6am-7am', time: '06:00-07:00' })
+  assert.deepEqual(o('gym 6-7am'), { line: 'gym 6am-7am', time: '06:00-07:00' })
+  assert.deepEqual(o('call 10 to 11am'), { line: 'call 10am-11am', time: '10:00-11:00' })
+  assert.deepEqual(o('sync 10 – 11am'), { line: 'sync 10am-11am', time: '10:00-11:00' })
+  assert.deepEqual(o('dinner 7 till 9pm'), { line: 'dinner 7pm-9pm', time: '19:00-21:00' })
+  assert.deepEqual(o('Interview 2 pm to 3 pm'), { line: 'Interview 2pm-3pm', time: '14:00-15:00' })
+  assert.deepEqual(o('focus 9 - 10:30am'), { line: 'focus 9am-10:30am', time: '09:00-10:30' })
+  assert.deepEqual(o('gym 6 - 07:00'), { line: 'gym 06:00-07:00', time: '06:00-07:00' })
+  // Across noon, and a whole workday.
+  assert.deepEqual(o('lunch 11 - 1pm'), { line: 'lunch 11am-1pm', time: '11:00-13:00' })
+  assert.deepEqual(o('shift 9 - 5pm'), { line: 'shift 9am-5pm', time: '09:00-17:00' })
+  // A full range plain enter reads as twelve and a half hours gets the reading it almost certainly meant.
+  assert.deepEqual(o('late 1:00-1:30pm'), { line: 'late 1pm-1:30pm', time: '13:00-13:30' })
+  // Into the next day, the way the grammar reads the full spelling.
+  assert.deepEqual(o('shift 11 - 7am'), { line: 'shift 11pm-7am', time: '23:00-07:00' })
+  assert.deepEqual(o('party 10 - 2am'), { line: 'party 10pm-2am', time: '22:00-02:00' })
+  assert.deepEqual(o('party 9 - 12am'), { line: 'party 9pm-12am', time: '21:00-00:00' })
+  // Tags and priority after the range come along, after it.
+  assert.deepEqual(o('gym 6 - 7am #fit'), { line: 'gym 6am-7am #fit', time: '06:00-07:00' })
+  assert.deepEqual(o('gym 6-7am #fit !1'), { line: 'gym 6am-7am #fit !1', time: '06:00-07:00' })
+  assert.deepEqual(o('call 10 to 11am #work !high'), { line: 'call 10am-11am #work !high', time: '10:00-11:00' })
+  assert.deepEqual(Model.parseQuickAdd('gym 6am-7am #fit !1').tags, ['fit'])
+  // A day in the line stays where it was.
+  const moved = o('gym tomorrow 6 - 7am')
+  assert.equal(moved.line, 'gym tomorrow 6am-7am')
+  assert.equal(Model.parseQuickAdd(moved.line).due, 'tomorrow')
+})
+
+test('nothing is offered without half a range, or when the line already reads as one', () => {
+  // "9:30" is already a clock, so that line is already the range it would be offered.
+  for (const line of ['Buy milk', 'Task 9am-5pm', 'Meeting today 8:30 am - 9:30 am', 'focus 9:30 - 11am', 'Level 3 - 9pm-10pm',
+    'Sprint review - 9pm', 'gym 6 - 7', 'Level 3 - 21:00', 'Room 5 - 3pm', '6-7am', 'Buy 2 amps',
+    // Taking the range would leave no name at all, so shift+enter would add nothing.
+    '#work 6 - 7am', '!1 6 - 7am']) {
+    assert.equal(Model.halfRangeOffer(line), null, line)
+  }
+})
+
+test('the offer gets a line of its own, and the first still says what plain enter will do', () => {
+  const both = t => {
+    const p = Model.parseQuickAdd(t)
+    return [Model.quickAddPreview(p, false), Model.quickAddOfferHint(Model.halfRangeOffer(t), p, false, '', NOW)]
+  }
+  // The first line is exactly the receipt 0.5.0 gave for these lines.
+  assert.deepEqual(both('gym 6 - 7am'), ['Today · 07:00 · called “gym 6 -”', '⇧ enter → 06:00–07:00'])
+  // Plain enter still adds this one all-day, as it always did; the offer line is where it shows.
+  assert.deepEqual(both('gym 6-7am'), ['Today', '⇧ enter → 06:00–07:00'])
+  assert.deepEqual(both('Standup 9 - 10 am'), ['Today · time not recognised', '⇧ enter → 09:00–10:00'])
+  assert.deepEqual(both('Buy milk 21:00'), ['Today · 21:00', ''])
+  // Taking the range lands the task on the day written in front of it, so the offer says which.
+  assert.deepEqual(both('gym tomorrow 6 - 7am'), ['Today · 07:00 · called “gym tomorrow 6 -”', '⇧ enter → Tomorrow 06:00–07:00'])
+  // Compared as days: a date that is today is not named as if it were another day.
+  assert.deepEqual(both('gym 2026-08-12 6 - 7am')[1], '⇧ enter → 06:00–07:00')
+  for (const line of ['gym 6 - 7am', 'call 10 to 11am', 'Standup 9 - 10 am', 'lunch 11 - 1pm', 'shift 11 - 7am', 'gym 6 - 7am #fit']) {
+    const offer = Model.halfRangeOffer(line)
+    const reread = Model.parseQuickAdd(offer.line)
+    assert.equal(reread.time, offer.time, line)
+    // Once taken there is nothing left to offer.
+    assert.equal(Model.halfRangeOffer(offer.line), null, line)
+  }
+})
+
+test('while editing, the offer names the task it would leave behind when that is a rename', () => {
+  const two = (t, was) => {
+    const p = Model.parseEdit(t, was)
+    return [Model.quickAddPreview(p, true, was), Model.quickAddOfferHint(Model.halfRangeOffer(t), p, true, was, NOW)]
+  }
+  // Plain enter keeps "Level 3 -"; shift+enter would make it "Level", and says so.
+  assert.deepEqual(two('Level 3 - 9pm', 'Level 3 -'), ['Today · 21:00', '⇧ enter → 15:00–21:00 · renaming to “Level”'])
+  // Plain enter renames; shift+enter keeps the name — each line speaks for its own key.
+  assert.deepEqual(two('Shift 9 - 5pm', 'Shift'), ['Renaming to “Shift 9 -” · Today · 17:00', '⇧ enter → 09:00–17:00'])
+  // Read the way the edit is sent: "Notes for" keeps its filler word through
+  // shift+enter, so the offer does not claim a rename that will not happen.
+  // An undated line leaves the task's own date alone on plain enter, but a range
+  // sets one — so the offer names the day it would move the task to.
+  assert.deepEqual(two('Standup 9 - 10 am', 'Standup'),
+    ['Renaming to “Standup 9 - 10 am” · Date unchanged', '⇧ enter → Today 09:00–10:00'])
+  assert.deepEqual(two('Notes for today 6 - 7am', 'Notes for'),
+    ['Renaming to “Notes for today 6 -” · Today · 07:00', '⇧ enter → 06:00–07:00'])
+})
+
 test('a line that would create nothing previews nothing', () => {
   assert.equal(Model.quickAddPreview(Model.parseQuickAdd(''), false), '')
   assert.equal(Model.quickAddPreview(Model.parseQuickAdd('   #tag  '), false), '')

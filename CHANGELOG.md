@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Shift+enter takes the range a half-typed line means. `gym 6 - 7am`,
+  `gym 6-7am` and `call 10 to 11am` end in a bare hour, so the grammar cannot
+  read them as a range — and `Level 3 - 9pm` has the same shape and means what
+  it reads, so it does not guess. A second line under the field offers the
+  range (`⇧ enter → 06:00–07:00`), naming the day when one is written in front
+  of it, and shift+enter rewrites the line to `gym 6am-7am` before adding it —
+  tags and priority after the range come along, and a block may run past
+  midnight. The first line still says exactly what plain enter will do; plain
+  enter is unchanged, and shift+enter with nothing on offer is plain enter.
+  The unspaced `gym 6-7am`, which plain enter still adds all-day, gets the
+  offer too.
+
 ## 0.5.0 — 2026-09-13
 
 ### Added

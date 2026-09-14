@@ -463,6 +463,7 @@ Renew the TLS cert #work !1 tomorrow
 | trailing `today` / `tomorrow` / `yesterday` / `2026-09-01` | sets the due date | TickTick parses dates from text too |
 | trailing `21:00` / `9pm` / `9 pm` / `9:30am` | sets a due hour | TickTick parses times too |
 | trailing `21:00-22:30` / `9am-5pm` | sets a duration — both ends must be clocks; an end not after the start spills into the next day | this plugin's |
+| `shift+enter` on `gym 6 - 7am` | takes the range the hint offers, as `gym 6am-7am` | this plugin's |
 | `on` `for` `due` `by` before either; `at` and `@` before a clock; `@` attached to a day (`@tomorrow`) | filler; goes with the date, not the title | TickTick swallows these too |
 
 Everything not consumed becomes the title, so the line above creates *Renew
@@ -493,7 +494,12 @@ Five details worth knowing:
   way. The glued `gym 6 - 7am` is still read as it always was, because
   `Level 3 - 9pm` has the same shape and is a real title with a real time;
   the hint then names the task, `called “gym 6 -”`, so a half-read range
-  shows before enter.
+  shows before enter. Either way a second line under the field offers the
+  range — `⇧ enter → 06:00–07:00` — and **shift+enter** takes it, rewriting
+  the line to `gym 6am-7am` before it is added. Tags or priority after the
+  range come along, a day written in front of it is named
+  (`⇧ enter → Tomorrow 06:00–07:00`), and a block may run past midnight
+  (`shift 11 - 7am`). Plain enter never guesses.
 - The line under the field says what it understood — `Today · 21:00`, or
   just `Today` when you typed no time. A clock it would not take says so —
   `Today · time not recognised` — and the words stay in the title, so the task
