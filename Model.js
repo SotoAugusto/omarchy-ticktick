@@ -427,14 +427,50 @@ var PRIORITY_WORDS = {
 var DATE_WORD = "(today|tomorrow|yesterday|\\d{4}-\\d{2}-\\d{2})"
 // A bare "9" is deliberately not a time — a title can end with a number.
 // An hour must carry a colon ("21:00", "9:30am") or a meridiem ("9pm").
-var TIME_WORD = "(\\d{1,2}:\\d{2}(?:am|pm)?|\\d{1,2}(?:am|pm))"
+// The space in "9 pm" is optional because that is how people type it; the
+// meridiem still has to end the line, so "Buy 2 amps" is not 02:00.
+var TIME_WORD = "(\\d{1,2}:\\d{2}(?:\\s*(?:am|pm))?|\\d{1,2}\\s*(?:am|pm))"
 var TIME_RANGE = TIME_WORD + "(?:\\s*-\\s*" + TIME_WORD + ")?"
-var LEAD = "\\s(?:for\\s+|on\\s+|due\\s+|by\\s+)?"
+// Filler that belongs to the date rather than the title. Without it, "notes
+// for today" becomes a task called "notes for" — and "at", the most natural
+// word before a clock, used to be the one left stranded there.
+//
+// `\s+` and not `\s`: stripping a mid-line "#tag" or "!1" leaves the space on
+// both sides of it behind, so "Review tomorrow #work 09:00" reaches here as
+// "Review tomorrow  09:00". A single-space LEAD does not bridge that gap, and
+// the day word ends up in the title with the task due today.
+var LEAD = "\\s+(?:for\\s+|on\\s+|due\\s+|by\\s+|at\\s+|@\\s*)?"
+
+// The same filler in front of a day word, minus "at". "at" belongs in front
+// of a clock — "Call mum at 9pm" — but in front of a day it is nearly always
+// the end of a title: "Look at today" is a task called "Look at", and taking
+// the word there also made an unchanged edit of any such task rename it,
+// because the edit line is the title followed by its day. "@" is taken only
+// attached — "standup @tomorrow" is shorthand — since a spaced one ("Ping @
+// today") is how a title ending in "@" comes back from the edit line.
+var DATE_LEAD = "\\s+(?:for\\s+|on\\s+|due\\s+|by\\s+|@(?=\\S))?"
+
+// A trailing hour, an optional minute and meridiem, and a range separator: the
+// front half of a range this grammar cannot read, as it sits at the end of the
+// text before a clock ("gym 6 -", "call 10 to").
+var HALF_RANGE = /(?:^|\s)\d{1,2}(?::\d{2})?(?:\s*(?:am|pm))?\s*(?:[-–—]|to|til|till|until|thru|through)\s*$/i
+
+// A single clock spelled the way this field has always read it: meridiem
+// glued on, and a space right before it. Whatever filler now sits in front
+// ("at 9pm") does not change that the clock itself was always taken.
+var ESTABLISHED_CLOCK = /(?:^|\s)(?:\d{1,2}:\d{2}(?:am|pm)?|\d{1,2}(?:am|pm))\s*$/i
+
+// A clock this grammar would read on its own, anywhere in a line. Only a
+// trailing one is taken, so one left in the title — "Dentist 3pm tomorrow" —
+// is a time that was not set, and the hint has to say so.
+var CLOCK_IN_TEXT = /(?:^|\s)(?:\d{1,2}:\d{2}(?:\s*(?:am|pm))?|\d{1,2}\s*(?:am|pm))(?=$|\s|[-–—.,;:!?)])/i
 
 // "9pm" → "21:00", "9:30am" → "09:30". Anything that is not a real clock
 // returns null, and the token stays in the title rather than being eaten.
 function toClock24(token) {
-  var text = String(token).toLowerCase()
+  // "1:33 am" and "1:33am" are the same clock; the space is the typist's,
+  // not the grammar's.
+  var text = String(token).toLowerCase().replace(/\s+/g, "")
 
   var clock = text.match(/^(\d{1,2}):(\d{2})(am|pm)?$/)
   if (clock) {
@@ -490,8 +526,12 @@ function parseQuickAdd(text) {
   var endClock = null
   var endGiven = false
 
-  var dateAndTime = rest.match(new RegExp(LEAD + DATE_WORD + "\\s+" + TIME_RANGE + "\\s*$", "i"))
-  var dateOnly = dateAndTime ? null : rest.match(new RegExp(LEAD + DATE_WORD + "\\s*$", "i"))
+  // Filler twice, not once: it can sit before the date ("due tomorrow") and
+  // again before the clock ("tomorrow at 9:15"). With a plain space here,
+  // "tomorrow at 9:15" matched only the clock and left the day in the title —
+  // a task named "Standup tomorrow", scheduled today.
+  var dateAndTime = rest.match(new RegExp(DATE_LEAD + DATE_WORD + LEAD + TIME_RANGE + "\\s*$", "i"))
+  var dateOnly = dateAndTime ? null : rest.match(new RegExp(DATE_LEAD + DATE_WORD + "\\s*$", "i"))
   var timeOnly = dateAndTime || dateOnly ? null : rest.match(new RegExp(LEAD + TIME_RANGE + "\\s*$", "i"))
 
   if (dateAndTime) {
@@ -514,17 +554,46 @@ function parseQuickAdd(text) {
   // A clock that is not a clock — "25:00", "9-10" with no colon — is just a
   // word. The whole trailing blob stays in the title and nothing is set,
   // which is also what keeps a title like "Finish 3" out of the parser.
+  //
+  // `timeRejected` remembers that this happened. The line looked like it
+  // carried a clock and does not, which is the one case the hint under the
+  // field cannot show as a date alone: "Today" reads the same whether you
+  // typed no time or typed one this grammar would not take.
+  var timeRejected = false
   if (dateAndTime && (startClock === null || (endGiven && endClock === null))) {
+    timeRejected = true
     dateToken = null
     startClock = null
     endClock = null
   }
   if (timeOnly && (startClock === null || (endGiven && endClock === null))) {
+    timeRejected = true
     startClock = null
     endClock = null
   }
 
   var matched = dateAndTime || dateOnly || timeOnly
+
+  // A clock is not taken when the text just before it is the front half of a
+  // range this grammar cannot read. A range here is a hyphen between two
+  // clocks; in "gym 6 - 7 am" the "6" is a number, not six o'clock, so only
+  // the tail matches, and taking it would name the task "gym 6 -" and remind
+  // at 07:00 — the END of the block — while the hint said it had worked.
+  //
+  // Only a single clock spelled in a way this field has not always read is
+  // refused. A glued clock straight after the title — "Level 3 - 9pm" — has
+  // always been taken, and it is as often a real title with a real time as a
+  // half-typed range; refusing it would silently stop a reminder that works
+  // today. That spelling keeps its clock, and the hint shows the name the task
+  // will get, which is where a half-read range gives itself away. A whole
+  // range, or a match that took a day word, is never half of anything.
+  if (matched && matched === timeOnly && endClock === null
+      && !ESTABLISHED_CLOCK.test(matched[0])
+      && HALF_RANGE.test(rest.slice(0, matched.index))) {
+    matched = null
+    timeRejected = true
+  }
+
   if (matched && (dateToken !== null || startClock !== null)) {
     if (dateToken !== null) due = dateToken
     time = startClock === null ? null : (endClock !== null ? startClock + "-" + endClock : startClock)
@@ -532,13 +601,15 @@ function parseQuickAdd(text) {
     rest = rest.slice(0, matched.index)
   }
 
+  var title = rest.replace(/\s+/g, " ").trim()
   return {
-    title: rest.replace(/\s+/g, " ").trim(),
+    title: title,
     tags: tags,
     priority: priority,
     due: due,
     dueGiven: dueGiven,
-    time: time
+    time: time,
+    timeRejected: time === null && (timeRejected || CLOCK_IN_TEXT.test(title))
   }
 }
 
@@ -582,8 +653,33 @@ function editLineFor(task, index) {
 // What the line means as an edit. Tags, priority, and the schedule are
 // always sent, because deleting "#work" (or the clock) from the line is how
 // a tag (or a duration) is removed; an undated, untimed line sends neither.
-function editArgs(taskId, text) {
+// The words the day and clock grammar takes off the end of a title.
+var TITLE_FILLER_TAIL = /^(?:\s+(?:for|on|by|due|at|@))+$/i
+
+// What an edit line means, given the name the task had when the field was
+// opened. The line is the title followed by its day, and "for", "on", "by" and
+// "due" in front of a day are filler — so a task called "Notes for" would come
+// back as "Notes" from an edit that never touched its name.
+//
+// The old name is kept only for exactly that loss: the parser dropped nothing
+// but trailing filler words, and the line still begins with the whole old
+// name. Anything else is the user's edit and is sent as typed — deleting the
+// repeated day word from "Standup today today 09:00" really renames the task,
+// and a title holding "!1" or "#42" was never a filler problem.
+function parseEdit(text, wasTitled) {
   var parsed = parseQuickAdd(text)
+  var before = wasTitled === undefined || wasTitled === null
+    ? "" : String(wasTitled).replace(/\s+/g, " ").trim()
+  if (before === "" || parsed.title === before) return parsed
+  var line = String(text || "").replace(/\s+/g, " ").trim()
+  if (before.indexOf(parsed.title) === 0
+      && TITLE_FILLER_TAIL.test(before.slice(parsed.title.length))
+      && line.indexOf(before + " ") === 0) parsed.title = before
+  return parsed
+}
+
+function editArgs(taskId, text, wasTitled) {
+  var parsed = parseEdit(text, wasTitled)
   if (parsed.title === "") return null
   var args = [
     "update", String(taskId),
@@ -606,6 +702,182 @@ function quickAddArgs(text) {
   return args
 }
 
+// ---- range offer ----------------------------------------------------------
+
+// "gym 6 - 7am" is a range to whoever typed it, and a title ending in "6 -" to
+// the grammar, which only reads a range when both ends are clocks. It cannot
+// just start guessing: "Level 3 - 9pm" has the same shape and means exactly
+// what the grammar reads, and every guess that reads it as a range is a
+// reminder that worked yesterday landing at the wrong time today. So the field
+// does not guess. The hint offers the range reading, and shift+enter takes it
+// by rewriting the line into a spelling the grammar reads one way only
+// ("gym 6am-7am"). Plain enter is unchanged.
+var RANGE_TAIL = /(^|\s)(\d{1,2})(?::(\d{2}))?\s*(am|pm)?(\s*[-–—]\s*|\s+(?:to|til|till|until|thru|through)\s+)(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*$/i
+
+// Longest block worth offering. A workday ("shift 9 - 5pm") fits; eighteen
+// hours ("Level 3 - 21:00") is not a range anyone meant.
+var RANGE_OFFER_MAX_MINUTES = 8 * 60
+
+// Tags and priority may trail the range ("gym 6 - 7am #fit !1"). Quick add
+// strips them from anywhere, so the range is looked for in front of them and
+// they go back after it.
+var TRAILING_MARKS = /(?:\s+(?:#[^\s#]+|![A-Za-z0-9]+))+\s*$/
+
+function offerClockMinutes(hour, minute, meridiem) {
+  var h = Number(hour)
+  var m = minute === undefined || minute === "" ? 0 : Number(minute)
+  if (isNaN(h) || isNaN(m) || m > 59) return null
+  if (meridiem) {
+    if (h < 1 || h > 12) return null
+    h = h % 12
+    if (meridiem === "pm") h += 12
+  } else if (h > 23) {
+    return null
+  }
+  return h * 60 + m
+}
+
+function offerClockSpelled(total, withMeridiem) {
+  var h = Math.floor(total / 60)
+  var m = total % 60
+  if (!withMeridiem) return pad2(h) + ":" + pad2(m)
+  return (h % 12 === 0 ? 12 : h % 12) + (m ? ":" + pad2(m) : "") + (h >= 12 ? "pm" : "am")
+}
+
+// What shift+enter would turn the line into — { line, time, due, title } — or
+// null when the line does not end in half a range, or already reads as the
+// range it would get.
+function halfRangeOffer(text) {
+  var line = String(text || "")
+  var marks = line.match(TRAILING_MARKS)
+  var core = marks ? line.slice(0, marks.index) : line
+  var suffix = marks ? marks[0].replace(/\s+$/, "") : ""
+  var tail = core.match(RANGE_TAIL)
+  if (!tail) return null
+  var startMeridiem = tail[4] ? tail[4].toLowerCase() : ""
+  var endMeridiem = tail[8] ? tail[8].toLowerCase() : ""
+  // The end has to be a clock on its own; "gym 6 - 7" is two numbers.
+  if (!endMeridiem && tail[7] === undefined) return null
+  var end = offerClockMinutes(tail[6], tail[7], endMeridiem)
+  if (end === null) return null
+
+  // A bare start takes the end's meridiem, or the other one across noon
+  // ("11 - 1pm") — whichever makes a real block.
+  var tries = startMeridiem ? [startMeridiem]
+    : endMeridiem ? [endMeridiem, endMeridiem === "am" ? "pm" : "am"]
+    : [""]
+  var spelled = startMeridiem !== "" || endMeridiem !== ""
+  var current = parseQuickAdd(line)
+  for (var i = 0; i < tries.length; i++) {
+    var start = offerClockMinutes(tail[2], tail[3], tries[i])
+    if (start === null) continue
+    // An end not after the start runs into the next day ("shift 11 - 7am"),
+    // which is how the grammar reads the full spelling too.
+    var length = end - start
+    if (length <= 0) length += 24 * 60
+    if (length > RANGE_OFFER_MAX_MINUTES) continue
+    var time = offerClockSpelled(start, false) + "-" + offerClockSpelled(end, false)
+    if (current.time === time) return null
+    var rewritten = core.slice(0, tail.index + tail[1].length)
+      + offerClockSpelled(start, spelled) + "-" + offerClockSpelled(end, spelled) + suffix
+    // Only offer what the grammar will actually read back, name intact.
+    var reread = parseQuickAdd(rewritten)
+    if (reread.title !== "" && reread.time === time) {
+      return { line: rewritten, time: time, due: reread.due, title: reread.title }
+    }
+  }
+  return null
+}
+
+// What the line in the field is about to create, as one short line under it.
+// The grammar is narrow on purpose — a clock it does not recognise stays in
+// the title, and the task quietly lands at midnight — so the field says what
+// it understood while there is still time to fix it.
+//
+// `editing` matters: an add always sends a due date, so an undated line lands
+// today, while an edit sends one only when the line carries a date and leaves
+// the task's own schedule alone otherwise.
+//
+// `wasTitled` is the task's current name when editing. The grammar can take a
+// trailing word that belongs to the title — "Look at today" is a task called
+// "Look" — and an edit that changed nothing then renames the task on the way
+// out. There is no reading that keeps both, so the hint says which one it
+// picked while the field is still open.
+var DUE_WORD_LABELS = { today: "Today", tomorrow: "Tomorrow", yesterday: "Yesterday" }
+
+function quickAddPreview(parsed, editing, wasTitled) {
+  if (!parsed || parsed.title === "") return ""
+
+  // Compared the way the line is read: whitespace is tidied on the way out, as
+  // it always has been, and a change nobody can see is not worth calling a
+  // rename — a warning that fires for nothing teaches people to ignore it.
+  var before = wasTitled === undefined || wasTitled === null
+    ? "" : String(wasTitled).replace(/\s+/g, " ").trim()
+  var renamed = editing && before !== "" && before !== parsed.title
+    ? "Renaming to “" + parsed.title + "”"
+    : ""
+
+  var when
+  if (editing && !parsed.dueGiven) {
+    when = "Date unchanged"
+  } else {
+    when = DUE_WORD_LABELS[parsed.due] || String(parsed.due)
+    // The en dash a duration wears everywhere else in the panel.
+    if (parsed.time) when += " · " + String(parsed.time).replace("-", "–")
+    // A line that looks like it carries a clock and does not reads as a plain
+    // day otherwise, which is the same thing the field says when you typed no
+    // time at all — and the difference is a reminder that fires or never does.
+    else if (parsed.timeRejected) when += " · time not recognised"
+    // "Level 3 - 9pm" and "gym 6 - 7am" have the same shape, so both keep
+    // their clock; the name the task is about to get is what tells them apart.
+    if (!editing && parsed.time && HALF_RANGE.test(parsed.title)) when += " · called “" + parsed.title + "”"
+  }
+
+  return renamed === "" ? when : renamed + " · " + when
+}
+
+// The calendar day a due word lands on, as a stamp.
+function dueWordStamp(word, now) {
+  var today = startOfDay(now || new Date())
+  var w = String(word || "today").toLowerCase()
+  if (w === "today") return dateStamp(today)
+  if (w === "tomorrow") return dateStamp(addDays(today, 1))
+  if (w === "yesterday") return dateStamp(addDays(today, -1))
+  var parts = w.split("-")
+  if (parts.length === 3) {
+    var day = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]))
+    if (!isNaN(day.getTime())) return dateStamp(day)
+  }
+  return null
+}
+
+// The second line under the field: what shift+enter would do instead, or ""
+// when it has nothing to offer. It has a line of its own so the first — what
+// plain enter will do, the receipt this field has always given — keeps all its
+// room. It names the day when taking the range lands the task on another one,
+// and, while editing, the name the task would come out with when that differs.
+function quickAddOfferHint(offer, parsed, editing, wasTitled, now) {
+  if (!offer) return ""
+  var said = "⇧ enter → "
+  // The day is named whenever taking the range lands the task on another day
+  // than plain enter would — compared as calendar days, so "2026-09-13" on the
+  // 13th is today — and always while editing a line with no date in it: plain
+  // enter leaves the task's own date alone there, but a range needs a day and
+  // sets one.
+  var keepsOwnDate = editing && parsed && !parsed.dueGiven
+  if (!parsed || keepsOwnDate || dueWordStamp(offer.due, now) !== dueWordStamp(parsed.due, now)) {
+    said += (DUE_WORD_LABELS[offer.due] || String(offer.due)) + " "
+  }
+  said += String(offer.time).replace("-", "–")
+  if (editing) {
+    var before = wasTitled === undefined || wasTitled === null
+      ? "" : String(wasTitled).replace(/\s+/g, " ").trim()
+    var after = parseEdit(offer.line, wasTitled).title
+    if (before !== "" && after !== before) said += " · renaming to “" + after + "”"
+  }
+  return said
+}
+
 // ---- due tiers ---------------------------------------------------------
 
 // TickTick has no colour for "overdue" or "today" — every client paints that
@@ -616,6 +888,181 @@ function dueTier(task, now) {
   var due = taskDueDate(task)
   if (!due) return "upcoming"
   return dateStamp(due) === dateStamp(now || new Date()) ? "today" : "upcoming"
+}
+
+// ---- due notifications -------------------------------------------------
+
+// How far back a reminder still counts as news. A check is often the first
+// one in a while — the shell restarts on every theme or config change, and a
+// laptop suspends — so without a floor the first pass after a gap would
+// announce the whole morning at once. Too tight a floor loses the reminder
+// that fell in the gap instead, which is why this is an hour and not a
+// minute.
+var NOTIFY_CATCHUP_MINUTES = 60
+
+// How many titles a batched notification lists before it starts counting.
+var NOTIFY_BODY_LINES = 5
+
+// What "already announced" is keyed on. Not the id: a recurring task keeps
+// its id and rolls its due date forward on completion, so an id alone would
+// announce a daily task once and never again. Rescheduling earns a fresh
+// reminder for the same reason — the moment is what was announced, not the
+// row.
+function notifyKey(task) {
+  var when = taskTimeKey(task)
+  if (!task || !task.id || !when) return ""
+  return String(task.id) + "@" + when.getTime()
+}
+
+// Which tasks have just come due, and the announced-keys map to keep.
+//
+// The whole state transition lives here rather than in the service, so what
+// is announced once and only once is testable without a shell: the caller
+// spawns a process and saves `notified` back, and has no decisions of its
+// own to get wrong.
+//
+// `options` carries `leadMinutes` (announce this far ahead of the moment),
+// `catchupMinutes` (overridable for tests), `skipIds` — the completions held
+// in the undo window, whose rows are already gone from the panel while the
+// cache catches up — and `adopt`.
+//
+// `adopt` records every moment that has already passed without saying a
+// word. It is what the first pass does after the feature is switched on: the
+// catch-up window exists for a gap in a feature that was running, and
+// switching it on is not a gap — nothing was missed, because nothing was
+// armed. A reminder whose lead time has started but whose moment is still
+// ahead was not missed either; it is due now, and goes out as usual.
+function dueNotifications(tasks, now, notified, options) {
+  var opts = options || {}
+  var nowMs = (now || new Date()).getTime()
+  var leadMs = Math.max(0, Number(opts.leadMinutes) || 0) * 60000
+  var catchupMs = Math.max(1, Number(opts.catchupMinutes) || NOTIFY_CATCHUP_MINUTES) * 60000
+  var seen = notified || {}
+  var skip = opts.skipIds || {}
+
+  var due = []
+  var keep = {}
+
+  // An announced key survives on its own moment, not on its task still being
+  // in this pass's list. Rebuilding `keep` purely from the tasks meant any
+  // moment a task stopped qualifying for — completed on the phone and then
+  // un-completed, or pushed back into the future by lowering the lead — was
+  // forgotten, and the same moment announced itself a second time when the
+  // task qualified again. The key carries the instant, so it can be aged out
+  // without the task, which is what still bounds the map to the window.
+  for (var old in seen) {
+    if (!seen[old]) continue
+    var at = Number(String(old).slice(String(old).lastIndexOf("@") + 1))
+    if (!isNaN(at) && nowMs - at <= catchupMs) keep[old] = true
+  }
+
+  for (var i = 0; i < (tasks || []).length; i++) {
+    var task = tasks[i]
+    if (!isOpen(task)) continue
+
+    // An all-day task's due "time" is midnight, which is not a moment
+    // anyone wants to be woken by. Dated-not-timed work is what the bar
+    // count is for.
+    if (task.isAllDay) continue
+
+    // A duration is announced when it begins, not when it ends: taskTimeKey
+    // already answers "the instant this happens", so a meeting 8:30-9:30
+    // arrives at 8:30 rather than as it finishes.
+    var when = taskTimeKey(task)
+    if (!when) continue
+
+    var fireMs = when.getTime() - leadMs
+    if (fireMs > nowMs) continue
+
+    // Too old to be news, and deliberately not recorded: the clock only
+    // moves forward, so this can never come back around and claim a slot in
+    // the map. That is also what bounds the map — everything in it fired
+    // within the catch-up window, and falls out on the pass after.
+    //
+    // Measured from the moment, not from the lead-adjusted fire time. Against
+    // `fireMs` the window would be `[due - lead, due - lead + catchup]`, which
+    // closes before the task is even due once the lead reaches an hour: with
+    // the 120 minutes the settings offer, a 17:00 meeting could only ever be
+    // announced between 15:00 and 16:00, and a shell restarted at 16:10 would
+    // never mention it at all.
+    if (nowMs - when.getTime() > catchupMs) continue
+
+    var key = notifyKey(task)
+    if (key === "") continue
+
+    // Already announced. Nothing to carry forward here — the loop above kept
+    // it on the strength of its own moment, which is the one place retention
+    // is decided.
+    if (seen[key]) continue
+    if (skip[String(task.id)]) continue
+
+    keep[key] = true
+    if (opts.adopt && when.getTime() <= nowMs) continue
+    due.push(task)
+  }
+
+  due.sort(function(a, b) {
+    var aKey = taskTimeKey(a)
+    var bKey = taskTimeKey(b)
+    return (aKey ? aKey.getTime() : 0) - (bKey ? bKey.getTime() : 0)
+  })
+
+  return { due: due, notified: keep }
+}
+
+// One line of a title, whatever the account sent. A batched body is a
+// newline-joined list of "HH:MM  Title", and Omarchy's own notification card
+// turns every newline into a line break — so a title carrying one forges an
+// extra row that reads like a task of your own, and pushes a real reminder
+// past the card's line cap. Collapsed before eliding, so the character budget
+// is spent on the title rather than on whitespace.
+function notifyTitle(task, limit) {
+  return plainText(elide(String((task && task.title) || "Task").replace(/\s+/g, " "), limit))
+}
+
+// The argv for notify-send, or null when there is nothing to say.
+//
+// One notification per batch, not one per task: several tasks cross the line
+// together often enough — at startup, on resume, on the hour — and five
+// stacked popups for five o'clock is the failure mode this shape avoids.
+function notifyArgs(due, now) {
+  if (!due || due.length === 0) return null
+
+  var summary
+  var body
+  if (due.length === 1) {
+    summary = notifyTitle(due[0], 60)
+    body = "Due " + dueLabel(due[0], now)
+  } else {
+    summary = due.length + " tasks due"
+    var lines = []
+    for (var i = 0; i < due.length && i < NOTIFY_BODY_LINES; i++) {
+      lines.push(dueLabel(due[i], now) + "  " + notifyTitle(due[i], 48))
+    }
+    if (due.length > NOTIFY_BODY_LINES) lines.push("+" + (due.length - NOTIFY_BODY_LINES) + " more")
+    body = lines.join("\n")
+  }
+
+  // "--" because a title someone began with a dash is a title, not an
+  // option. plainText for the same reason the bar label uses it: the summary
+  // is server-provided text headed for a notification daemon that renders
+  // markup.
+  return ["-a", "TickTick", "-u", "normal", "--", summary, body]
+}
+
+// The announced-keys file, read back the way parseCache reads its own: small,
+// but still a file on disk that a full filesystem could have truncated.
+function parseNotified(text) {
+  if (!text) return {}
+  try {
+    var parsed = JSON.parse(text)
+    if (!parsed || typeof parsed !== "object" || parsed instanceof Array) return {}
+    var out = {}
+    for (var key in parsed) if (parsed[key]) out[key] = true
+    return out
+  } catch (e) {
+    return {}
+  }
 }
 
 // ---- habits ------------------------------------------------------------
@@ -935,12 +1382,20 @@ if (typeof module !== "undefined") {
     tagColor: tagColor,
     tagLabel: tagLabel,
     dueTier: dueTier,
+    notifyKey: notifyKey,
+    dueNotifications: dueNotifications,
+    notifyArgs: notifyArgs,
+    parseNotified: parseNotified,
     syncIntervalSeconds: syncIntervalSeconds,
     syncIntervalLabels: syncIntervalLabels,
     parseQuickAdd: parseQuickAdd,
     quickAddArgs: quickAddArgs,
+    quickAddPreview: quickAddPreview,
     editLineFor: editLineFor,
     editArgs: editArgs,
+    parseEdit: parseEdit,
+    halfRangeOffer: halfRangeOffer,
+    quickAddOfferHint: quickAddOfferHint,
     projectName: projectName,
     checkinFor: checkinFor,
     habitProgress: habitProgress,

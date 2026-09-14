@@ -127,6 +127,11 @@ Panel {
   // one input and one syntax to know.
   property string editingTaskId: ""
 
+  // The name the task had when the field was opened. The grammar can take a
+  // trailing word that was part of the title, so the hint needs something to
+  // compare against to say the edit is about to rename it.
+  property string editingTitle: ""
+
   function beginEdit() {
     if (cursor < 0 || cursor >= navRows.length) return
     var row = navRows[cursor]
@@ -134,6 +139,7 @@ Panel {
     var task = displayTasks[row.index]
     if (!task || !task.id) return
     editingTaskId = String(task.id)
+    editingTitle = String(task.title || "")
     quickAdd.text = Model.editLineFor(task)
     quickAdd.forceActiveFocus()
     quickAdd.selectAll()
@@ -141,8 +147,92 @@ Panel {
 
   function cancelEdit() {
     editingTaskId = ""
+    editingTitle = ""
     quickAdd.text = ""
     keyCatcher.forceActiveFocus()
+  }
+
+  // What the line in the field would actually create, shown under it. The
+  // quick-add grammar is narrow on purpose, and a clock it does not recognise
+  // is not an error — the words stay in the title and the task lands at
+  // midnight, where an all-day task is never announced. This is the receipt
+  // that makes that visible before enter, which is what TickTick's own chip
+  // does for the same reason.
+  readonly property string quickAddHint: editingTaskId !== ""
+    ? Model.quickAddPreview(Model.parseEdit(quickAdd.text, editingTitle), true, editingTitle)
+    : Model.quickAddPreview(Model.parseQuickAdd(quickAdd.text), false, "")
+
+  // The second line: what shift+enter would do instead, or "". It stays off the
+  // first line so that line keeps all its room for what plain enter will do.
+  readonly property string quickAddOfferHint: Model.quickAddOfferHint(quickAddOffer,
+    editingTaskId !== "" ? Model.parseEdit(quickAdd.text, editingTitle) : Model.parseQuickAdd(quickAdd.text),
+    editingTaskId !== "", editingTitle, nowDate)
+
+  // What shift+enter would turn the line into: the range reading of a line
+  // that ends in half a range ("gym 6 - 7am"), or null. See Model.halfRangeOffer.
+  readonly property var quickAddOffer: Model.halfRangeOffer(quickAdd.text)
+
+  // The keyboard help, grouped by where the keys act (see the help Column).
+  readonly property var shortcutGroups: [
+    {
+      title: "Tasks & habits",
+      entries: [
+        { key: "\u2191 \u2193", what: "move \u2014 into an open task's subtasks too" },
+        { key: "enter", what: "complete task / check in / flip subtask" },
+        { key: "g / G", what: "first / last row" },
+        { key: "o", what: "open details, or fold them and step back out" },
+        { key: "e", what: "edit the selected task in the field" },
+        { key: "c", what: "copy the selected task as markdown" },
+        { key: "u", what: "undo the held action" }
+      ]
+    },
+    {
+      title: "Quick add field",
+      entries: [
+        { key: "a", what: "add a task" },
+        { key: "#tag", what: "tag it — # is TickTick's own" },
+        { key: "!1 !2 !3", what: "priority: high, medium, low" },
+        { key: "tomorrow", what: "a trailing date or time sets when \u2014 \"tomorrow at 9pm\"" },
+        { key: "\u21e7 enter", what: "take the offered range \u2014 \"gym 6 - 7am\" \u2192 06:00\u201307:00" }
+      ]
+    },
+    {
+      title: "Focus timer",
+      entries: [
+        { key: "p", what: "start or pause focus" },
+        { key: "d / del", what: "discard the focus block" }
+      ]
+    },
+    {
+      title: "Panel",
+      entries: [
+        { key: "v", what: "cycle range: today \u2192 tomorrow \u2192 7 days \u21ba" },
+        { key: "r", what: "sync now" },
+        { key: "tab", what: "next bar panel" },
+        { key: "?", what: "show or hide this list" },
+        { key: "esc", what: "back out, then close" }
+      ]
+    }
+  ]
+
+  // Width of the rail the key chips stack into: the widest key as this font
+  // actually draws it, plus the chip's padding. A fixed width clipped whichever
+  // key ran long — "tomorrow" by 2px — and would clip more under a theme with a
+  // larger caption size.
+  FontMetrics {
+    id: shortcutKeyMetrics
+    font.family: Style.font.family
+    font.pixelSize: Style.font.caption
+    font.bold: true
+  }
+  readonly property real shortcutRailWidth: {
+    var widest = 0
+    for (var g = 0; g < shortcutGroups.length; g++) {
+      var entries = shortcutGroups[g].entries
+      for (var e = 0; e < entries.length; e++)
+        widest = Math.max(widest, shortcutKeyMetrics.advanceWidth(entries[e].key))
+    }
+    return Math.max(Style.space(52), Math.ceil(widest) + Style.space(6))
   }
 
   // One task open at a time. `o` and the row's chevron both write here; a
@@ -246,6 +336,22 @@ Panel {
     }
   }
 
+  // Shift+enter takes the offered range, then submits as usual. With nothing on
+  // offer it is plain enter, so the key never silently does nothing.
+  function submitQuickAddOffer() {
+    if (quickAddOffer) quickAdd.text = quickAddOffer.line
+    submitQuickAdd()
+  }
+
+  function quickAddReturn(event) {
+    if (!(event.modifiers & Qt.ShiftModifier)) {
+      event.accepted = false
+      return
+    }
+    event.accepted = true
+    submitQuickAddOffer()
+  }
+
   function submitQuickAdd() {
     if (!svc) return
     var text = String(quickAdd.text || "").trim()
@@ -253,9 +359,11 @@ Panel {
 
     if (editingTaskId !== "") {
       var id = editingTaskId
+      var wasTitled = editingTitle
       editingTaskId = ""
+      editingTitle = ""
       quickAdd.text = ""
-      svc.submitEdit(id, text)
+      svc.submitEdit(id, text, wasTitled)
       return
     }
 
@@ -413,6 +521,7 @@ Panel {
     cursor = -1
     cursorActive = false
     editingTaskId = ""
+    editingTitle = ""
     expandedTaskId = ""
     pendingItemIds = ({})
     quickAdd.text = ""
@@ -659,46 +768,7 @@ Panel {
             PanelSeparator { width: parent.width; foreground: root.fg }
 
             Repeater {
-              model: [
-                {
-                  title: "Tasks & habits",
-                  entries: [
-                    { key: "\u2191 \u2193", what: "move \u2014 into an open task's subtasks too" },
-                    { key: "enter", what: "complete task / check in / flip subtask" },
-                    { key: "g / G", what: "first / last row" },
-                    { key: "o", what: "open details, or fold them and step back out" },
-                    { key: "e", what: "edit the selected task in the field" },
-                    { key: "c", what: "copy the selected task as markdown" },
-                    { key: "u", what: "undo the held action" }
-                  ]
-                },
-                {
-                  title: "Quick add field",
-                  entries: [
-                    { key: "a", what: "add a task" },
-                    { key: "#tag", what: "tag it — # is TickTick's own" },
-                    { key: "!1 !2 !3", what: "priority: high, medium, low" },
-                    { key: "tomorrow", what: "a trailing date or time sets when \u2014 \"fri 9:30-11\"" }
-                  ]
-                },
-                {
-                  title: "Focus timer",
-                  entries: [
-                    { key: "p", what: "start or pause focus" },
-                    { key: "d / del", what: "discard the focus block" }
-                  ]
-                },
-                {
-                  title: "Panel",
-                  entries: [
-                    { key: "v", what: "cycle range: today \u2192 tomorrow \u2192 7 days \u21ba" },
-                    { key: "r", what: "sync now" },
-                    { key: "tab", what: "next bar panel" },
-                    { key: "?", what: "show or hide this list" },
-                    { key: "esc", what: "back out, then close" }
-                  ]
-                }
-              ]
+              model: root.shortcutGroups
 
               Column {
                 id: shortcutGroup
@@ -726,7 +796,7 @@ Panel {
                     // any distance. Right-aligned in a shared column so the
                     // chips stack into one rail.
                     Item {
-                      width: Style.space(52)
+                      width: root.shortcutRailWidth
                       height: keycap.height
 
                       Rectangle {
@@ -939,7 +1009,41 @@ Panel {
             font.family: Style.font.family
             font.pixelSize: Style.font.bodySmall
             onAccepted: root.submitQuickAdd()
+            Keys.onReturnPressed: function(event) { root.quickAddReturn(event) }
+            Keys.onEnterPressed: function(event) { root.quickAddReturn(event) }
             Keys.onEscapePressed: root.cancelEdit()
+          }
+
+          Text {
+            width: parent.width
+            // The line is held while the field is in use rather than only while
+            // there is something to say. Collapsing it with the hint made the
+            // task list jump down on the first keystroke and back up after every
+            // enter, which is the moment you are looking at that list to see
+            // the task land.
+            visible: quickAdd.visible && (quickAdd.activeFocus || quickAdd.text !== "")
+            opacity: root.quickAddHint !== "" ? 1 : 0
+            text: root.quickAddHint !== "" ? root.quickAddHint : " "
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            color: root.muted
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+
+          Text {
+            width: parent.width
+            // The offer's own line, held together with the one above: an offer
+            // appears the moment "am" is typed, and the list must not move then
+            // any more than it does on the first keystroke.
+            visible: quickAdd.visible && (quickAdd.activeFocus || quickAdd.text !== "")
+            opacity: root.quickAddOfferHint !== "" ? 1 : 0
+            text: root.quickAddOfferHint !== "" ? root.quickAddOfferHint : " "
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            color: root.muted
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
           }
 
           // ---- tasks

@@ -1,5 +1,91 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- The keyboard help's key chips no longer lose a sliver of their left edge.
+  Their rail was a fixed width that `tomorrow` and `!1 !2 !3` overran by 2px;
+  it is now as wide as the widest key in the font the panel actually uses, so
+  a theme with a larger caption size cannot clip them either.
+- The README now says that shift+enter also offers the likelier reading of a
+  full range the grammar reads implausibly (`call 1:30-2pm`, read as 01:30 to
+  14:00, is offered 13:30–14:00), which 0.5.1 already did.
+
+## 0.5.1 — 2026-09-13
+
+### Added
+
+- Shift+enter takes the range a half-typed line means. `gym 6 - 7am`,
+  `gym 6-7am` and `call 10 to 11am` end in a bare hour, so the grammar cannot
+  read them as a range — and `Level 3 - 9pm` has the same shape and means what
+  it reads, so it does not guess. A second line under the field offers the
+  range (`⇧ enter → 06:00–07:00`), naming the day when one is written in front
+  of it, and shift+enter rewrites the line to `gym 6am-7am` before adding it —
+  tags and priority after the range come along, and a block may run past
+  midnight. The first line still says exactly what plain enter will do; plain
+  enter is unchanged, and shift+enter with nothing on offer is plain enter.
+  The unspaced `gym 6-7am`, which plain enter still adds all-day, gets the
+  offer too.
+
+## 0.5.0 — 2026-09-13
+
+### Added
+
+- Due notifications, off by default. Turn `notifyOnDue` on and the desktop
+  says so the moment a task's time arrives — the bar count is something you
+  have to look at, and this is the half that comes to you.
+  `notifyLeadMinutes` moves it earlier. A task with a duration is announced
+  when it **starts**, not as it ends; a task with a date but no time is never
+  announced, because its due time is midnight. Several tasks crossing at once
+  become one notification listing them rather than one popup each.
+
+  Nothing new polls: the check rides the clock the bar already runs once a
+  minute, and the only process it starts is `notify-send`. What has been
+  announced is keyed on the moment rather than the task, so a recurring task
+  that rolls forward — or one you reschedule — earns a fresh reminder, and
+  that record is kept in `~/.local/state/omarchy/ticktick/notified.json` so a
+  shell restart at 14:31 does not announce the 14:30 meeting again. A moment
+  is only announced within an hour of passing, so a laptop that slept all
+  morning reports the last hour and not the whole of it. Switching it on does
+  not replay what is already past, though a reminder still ahead of its moment
+  goes out; a task completed in the undo window stays quiet; and a reminder
+  `notify-send` could not deliver is tried again rather than counted as sent.
+
+- The quick-add field shows what it understood, under the line you are
+  typing: `Today · 21:00`, or plain `Today` when you typed no time. The
+  grammar is narrow and a clock it does not take is not an error — the words
+  stay in the title and the task lands all-day, which is also a task that
+  never notifies — so the hint says `time not recognised` when that happens,
+  names the task (`called “gym 6 -”`) when the text before a clock looks like
+  the start of a range, and leads with `Renaming to “…”` when an edit would
+  change a task's name. All of it is in front of you before enter rather than
+  after.
+
+### Fixed
+
+- Quick add takes the times people actually type. A space before the
+  meridiem works (`1:33 am`, not only `1:33am`), `at` and `@` join `for`,
+  `on`, `due` and `by` as filler in front of a clock, and the filler is
+  allowed between the day and the clock as well as before them — so
+  `Standup tomorrow at 9:15 am` is a task called *Standup*, due tomorrow
+  morning, where it used to be a task called *Standup tomorrow at 9:15 am*
+  due today with no time at all. `at` was the one preposition missing from
+  that list, and the one most likely to be typed. In front of a day word it
+  is left alone (`Look at today` is a task called *Look at*), and `@` counts
+  there only attached, as in `standup @tomorrow`. A range spelled with a bare
+  hour in the new spaced form — `gym 6 - 7 am`, `10 to 11 am` — is left in
+  the title rather than read as its end; the glued `gym 6 - 7am` reads as it
+  always did.
+- Editing a task whose title ends in `for`, `on`, `by` or `due` no longer
+  drops that word. The edit line is read like quick add, where those words in
+  front of a day are filler, but a line that still begins with the task's own
+  title has not renamed it — so `e` then enter leaves *Notes for* as it was,
+  and so does changing its day.
+- The panel's own shortcut list no longer advertises `"fri 9:30-11"`, which
+  never parsed: weekday names are not date words here, and a clock needs a
+  colon or a meridiem.
+
 ## 0.4.0 — 2026-08-30
 
 ### Added

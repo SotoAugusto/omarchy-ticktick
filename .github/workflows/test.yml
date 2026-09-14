@@ -1,0 +1,30 @@
+name: test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Model.js is plain JS shared with the QML, so this is the whole logic
+      # suite: due labels, quick-add grammar, notification state.
+      - name: Model tests
+        run: node --test tests/model.test.js
+
+      - name: CLI compiles
+        run: python3 -m py_compile bin/omarchy-ticktick
+
+      - name: Manifest is valid JSON
+        run: python3 -c 'import json; json.load(open("manifest.json"))'
