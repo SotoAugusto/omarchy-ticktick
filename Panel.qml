@@ -172,6 +172,69 @@ Panel {
   // that ends in half a range ("gym 6 - 7am"), or null. See Model.halfRangeOffer.
   readonly property var quickAddOffer: Model.halfRangeOffer(quickAdd.text)
 
+  // The keyboard help, grouped by where the keys act (see the help Column).
+  readonly property var shortcutGroups: [
+    {
+      title: "Tasks & habits",
+      entries: [
+        { key: "\u2191 \u2193", what: "move \u2014 into an open task's subtasks too" },
+        { key: "enter", what: "complete task / check in / flip subtask" },
+        { key: "g / G", what: "first / last row" },
+        { key: "o", what: "open details, or fold them and step back out" },
+        { key: "e", what: "edit the selected task in the field" },
+        { key: "c", what: "copy the selected task as markdown" },
+        { key: "u", what: "undo the held action" }
+      ]
+    },
+    {
+      title: "Quick add field",
+      entries: [
+        { key: "a", what: "add a task" },
+        { key: "#tag", what: "tag it — # is TickTick's own" },
+        { key: "!1 !2 !3", what: "priority: high, medium, low" },
+        { key: "tomorrow", what: "a trailing date or time sets when \u2014 \"tomorrow at 9pm\"" },
+        { key: "\u21e7 enter", what: "take the offered range \u2014 \"gym 6 - 7am\" \u2192 06:00\u201307:00" }
+      ]
+    },
+    {
+      title: "Focus timer",
+      entries: [
+        { key: "p", what: "start or pause focus" },
+        { key: "d / del", what: "discard the focus block" }
+      ]
+    },
+    {
+      title: "Panel",
+      entries: [
+        { key: "v", what: "cycle range: today \u2192 tomorrow \u2192 7 days \u21ba" },
+        { key: "r", what: "sync now" },
+        { key: "tab", what: "next bar panel" },
+        { key: "?", what: "show or hide this list" },
+        { key: "esc", what: "back out, then close" }
+      ]
+    }
+  ]
+
+  // Width of the rail the key chips stack into: the widest key as this font
+  // actually draws it, plus the chip's padding. A fixed width clipped whichever
+  // key ran long — "tomorrow" by 2px — and would clip more under a theme with a
+  // larger caption size.
+  FontMetrics {
+    id: shortcutKeyMetrics
+    font.family: Style.font.family
+    font.pixelSize: Style.font.caption
+    font.bold: true
+  }
+  readonly property real shortcutRailWidth: {
+    var widest = 0
+    for (var g = 0; g < shortcutGroups.length; g++) {
+      var entries = shortcutGroups[g].entries
+      for (var e = 0; e < entries.length; e++)
+        widest = Math.max(widest, shortcutKeyMetrics.advanceWidth(entries[e].key))
+    }
+    return Math.max(Style.space(52), Math.ceil(widest) + Style.space(6))
+  }
+
   // One task open at a time. `o` and the row's chevron both write here; a
   // task without details never takes the slot, so there is nothing to
   // open and nothing to collapse.
@@ -705,47 +768,7 @@ Panel {
             PanelSeparator { width: parent.width; foreground: root.fg }
 
             Repeater {
-              model: [
-                {
-                  title: "Tasks & habits",
-                  entries: [
-                    { key: "\u2191 \u2193", what: "move \u2014 into an open task's subtasks too" },
-                    { key: "enter", what: "complete task / check in / flip subtask" },
-                    { key: "g / G", what: "first / last row" },
-                    { key: "o", what: "open details, or fold them and step back out" },
-                    { key: "e", what: "edit the selected task in the field" },
-                    { key: "c", what: "copy the selected task as markdown" },
-                    { key: "u", what: "undo the held action" }
-                  ]
-                },
-                {
-                  title: "Quick add field",
-                  entries: [
-                    { key: "a", what: "add a task" },
-                    { key: "#tag", what: "tag it — # is TickTick's own" },
-                    { key: "!1 !2 !3", what: "priority: high, medium, low" },
-                    { key: "tomorrow", what: "a trailing date or time sets when \u2014 \"tomorrow at 9pm\"" },
-                    { key: "\u21e7 enter", what: "take the offered range \u2014 \"gym 6 - 7am\" \u2192 06:00\u201307:00" }
-                  ]
-                },
-                {
-                  title: "Focus timer",
-                  entries: [
-                    { key: "p", what: "start or pause focus" },
-                    { key: "d / del", what: "discard the focus block" }
-                  ]
-                },
-                {
-                  title: "Panel",
-                  entries: [
-                    { key: "v", what: "cycle range: today \u2192 tomorrow \u2192 7 days \u21ba" },
-                    { key: "r", what: "sync now" },
-                    { key: "tab", what: "next bar panel" },
-                    { key: "?", what: "show or hide this list" },
-                    { key: "esc", what: "back out, then close" }
-                  ]
-                }
-              ]
+              model: root.shortcutGroups
 
               Column {
                 id: shortcutGroup
@@ -773,7 +796,7 @@ Panel {
                     // any distance. Right-aligned in a shared column so the
                     // chips stack into one rail.
                     Item {
-                      width: Style.space(52)
+                      width: root.shortcutRailWidth
                       height: keycap.height
 
                       Rectangle {

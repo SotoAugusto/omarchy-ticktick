@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- The keyboard help's key chips no longer lose a sliver of their left edge.
+  Their rail was a fixed width that `tomorrow` and `!1 !2 !3` overran by 2px;
+  it is now as wide as the widest key in the font the panel actually uses, so
+  a theme with a larger caption size cannot clip them either.
+- The README now says that shift+enter also offers the likelier reading of a
+  full range the grammar reads implausibly (`call 1:30-2pm`, read as 01:30 to
+  14:00, is offered 13:30–14:00), which 0.5.1 already did.
+
 ## 0.5.1 — 2026-09-13
 
 ### Added

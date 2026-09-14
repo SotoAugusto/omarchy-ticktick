@@ -499,7 +499,10 @@ Five details worth knowing:
   the line to `gym 6am-7am` before it is added. Tags or priority after the
   range come along, a day written in front of it is named
   (`⇧ enter → Tomorrow 06:00–07:00`), and a block may run past midnight
-  (`shift 11 - 7am`). Plain enter never guesses.
+  (`shift 11 - 7am`). A full range the grammar reads implausibly gets the
+  likelier reading offered too: `call 1:30-2pm` is read as 01:30 to 14:00, a
+  twelve-and-a-half-hour block, and shift+enter offers 13:30–14:00. Plain
+  enter never guesses.
 - The line under the field says what it understood — `Today · 21:00`, or
   just `Today` when you typed no time. A clock it would not take says so —
   `Today · time not recognised` — and the words stay in the title, so the task
