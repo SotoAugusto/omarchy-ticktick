@@ -181,8 +181,12 @@ function dueTasks(tasks, options) {
   }
 
   result.sort(function(a, b) {
-    var aLate = isOverdue(a, now) ? 0 : 1
-    var bLate = isOverdue(b, now) ? 0 : 1
+    // Today first, the backlog under it. A long backlog otherwise fills the
+    // panel's row budget on its own and today's work never reaches the list
+    // -- the count of late work is already in the header, and a task that
+    // has been late for months is not more urgent than the meeting at noon.
+    var aLate = isOverdue(a, now) ? 1 : 0
+    var bLate = isOverdue(b, now) ? 1 : 0
     if (aLate !== bLate) return aLate - bLate
 
     // A duration is an appointment: it is pinned to a moment you have to

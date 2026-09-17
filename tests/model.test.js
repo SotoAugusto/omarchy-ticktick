@@ -82,13 +82,23 @@ test('the Next 7 days horizon reaches a week out but not past it', () => {
   assert.deepEqual(due.map(t => t.id), ['in6'])
 })
 
-test('overdue tasks sort ahead of everything due today', () => {
+test("today sorts ahead of the backlog, so a long backlog cannot bury it", () => {
   const tasks = [
     task({ id: 'today', dueDate: '2026-08-12T00:00:00.000+0000' }),
     task({ id: 'late', dueDate: '2026-08-09T00:00:00.000+0000' })
   ]
   const due = Model.dueTasks(tasks, { now: NOW, horizon: 'Today' })
-  assert.deepEqual(due.map(t => t.id), ['late', 'today'])
+  assert.deepEqual(due.map(t => t.id), ['today', 'late'])
+})
+
+test('the backlog keeps its own order, oldest first', () => {
+  const tasks = [
+    task({ id: 'older', dueDate: '2026-08-04T00:00:00.000+0000' }),
+    task({ id: 'today', dueDate: '2026-08-12T00:00:00.000+0000' }),
+    task({ id: 'recent', dueDate: '2026-08-09T00:00:00.000+0000' })
+  ]
+  const due = Model.dueTasks(tasks, { now: NOW, horizon: 'Today' })
+  assert.deepEqual(due.map(t => t.id), ['today', 'older', 'recent'])
 })
 
 test('includeOverdue false hides the backlog', () => {
@@ -215,11 +225,13 @@ test('a duration task ranks ahead of plain dated tasks', () => {
   assert.deepEqual(due.map(t => t.id), ['meeting', 'float'])
 })
 
-test('late work still outranks a duration task that has not started', () => {
+test('an appointment today outranks late work, which sits under the day', () => {
+  // Tonight's block is something to show up for; a task that went late days
+  // ago is not more urgent for being older, and the header already counts it.
   const overdue = task({ id: 'overdue', dueDate: '2026-08-09T00:00:00.000+0000' })
   const meeting = span(new Date(2026, 7, 12, 21, 0), new Date(2026, 7, 12, 22, 30), { id: 'meeting' })
   const due = Model.dueTasks([meeting, overdue], { now: NOW, horizon: 'Today' })
-  assert.deepEqual(due.map(t => t.id), ['overdue', 'meeting'])
+  assert.deepEqual(due.map(t => t.id), ['meeting', 'overdue'])
 })
 
 // --- task details --------------------------------------------------------
