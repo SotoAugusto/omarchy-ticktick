@@ -96,22 +96,31 @@ class TickTickError(RuntimeError):
         self.transient = transient
 
 
-def is_recurring_task(task: dict) -> bool:
-    """Whether a task carries a live recurrence marker.
+def is_series_head(task: dict) -> bool:
+    """Whether finishing this task has to roll a series forward.
 
-    `repeatFlag` is the ordinary RRULE, but TickTick can leave it empty on a
-    live series that repeats from completion. Those tasks retain one of the
-    other relationship fields instead. A zero `repeatFrom` appears on plain
-    tasks too, so it is not a recurrence marker by itself.
+    The series is the task carrying the rule — an RRULE in `repeatFlag`, or,
+    for a series that repeats from completion, a non-zero `repeatFrom` with
+    no occurrence markers. An occurrence TickTick has already materialised
+    links back with `repeatTaskId`, or carries a bare `repeatFirstDate` and
+    no rule of its own: it is one dated instance among many, so finishing it
+    is an ordinary completion and there is nothing to advance.
+
+    When in doubt the gate says series, not occurrence. A series mistaken
+    for an occurrence ends the whole series with a plain write; an
+    occurrence mistaken for a series is refused with a message pointing at
+    TickTick. The refusal is the safe direction.
     """
     if not isinstance(task, dict):
         return False
-    if task.get("repeatTaskId") or task.get("repeatFirstDate"):
+    if task.get("repeatTaskId"):
+        return False
+    repeat_flag = task.get("repeatFlag")
+    if repeat_flag and str(repeat_flag).strip():
         return True
     if task.get("repeatFrom") not in (None, "", 0, "0"):
-        return True
-    repeat_flag = task.get("repeatFlag")
-    return bool(repeat_flag and str(repeat_flag).strip())
+        return task.get("repeatFirstDate") in (None, "")
+    return False
 
 
 # --------------------------------------------------------------------------
@@ -377,23 +386,35 @@ def _excluded_dates(task: dict, zone) -> set:
     return skipped
 
 
-def _advance_from_completion(rule: dict, finished):
+def _advance_from_completion(rule: dict, dtstart, finished, excluded=()):
     """"Repeat from the day I finish" — one period past the completion date.
 
-    TickTick's picker only offers a bare frequency and interval in this mode,
-    so a day filter here means the rule came from somewhere else and the
-    plain period arithmetic would be wrong.
+    A bare frequency advances by a plain period. A rule that also names days
+    cannot: it has to land on a day the rule actually allows, so those scan
+    forward from the completion instead. Both are needed, because TickTick
+    writes repeatFrom="2" far more widely than its own picker suggests —
+    imported birthdays and calendar series carry it alongside a BYMONTH or
+    BYDAY. Refusing that combination blocks ordinary tasks, and advancing it
+    by a bare period would move a January birthday to whatever today is.
+
+    Either way a skipped occurrence stays skipped: landing on an `exDate`
+    would undo the skip, so the bare arithmetic steps past those days just
+    as the day-filter scan does.
     """
     if rule["byday"] or rule["bymonthday"] or rule["bymonth"]:
-        raise UnsupportedRecurrence("repeat-from-completion with day filters is not supported")
+        return next_occurrence_date(rule, dtstart, finished, excluded)
     interval = rule["interval"]
     if rule["freq"] == "DAILY":
-        return finished + timedelta(days=interval)
-    if rule["freq"] == "WEEKLY":
-        return finished + timedelta(weeks=interval)
-    if rule["freq"] == "MONTHLY":
-        return _add_months(finished, interval)
-    return _add_months(finished, 12 * interval)
+        candidate = finished + timedelta(days=interval)
+    elif rule["freq"] == "WEEKLY":
+        candidate = finished + timedelta(weeks=interval)
+    elif rule["freq"] == "MONTHLY":
+        candidate = _add_months(finished, interval)
+    else:
+        candidate = _add_months(finished, 12 * interval)
+    while candidate in (excluded or ()):
+        candidate += timedelta(days=1)
+    return candidate
 
 
 def _task_zone(task: dict):
@@ -516,16 +537,24 @@ def plan_recurring_completion(task: dict, completed_time: str) -> dict | None:
         raise UnsupportedRecurrence("it has no due date to advance")
     due_local = due.astimezone(zone).date()
 
+    first = parse_api_time(task.get("repeatFirstDate"))
+    dtstart = first.astimezone(zone).date() if first else due_local
+    if due_local < dtstart:
+        dtstart = due_local
+    excluded = _excluded_dates(task, zone)
+
     if str(task.get("repeatFrom") or "") == REPEAT_FROM_COMPLETION:
         finished = parse_api_time(completed_time)
         anchor = (finished or datetime.now(timezone.utc)).astimezone(zone).date()
-        next_date = _advance_from_completion(rule, anchor)
+        # Finishing early must not drag the series backwards. A task dated
+        # ahead of today — a birthday, a booking, anything imported with its
+        # real date — moves on from its own due date, not from this
+        # afternoon, or completing it once rewrites the day it falls on.
+        if anchor < due_local:
+            anchor = due_local
+        next_date = _advance_from_completion(rule, dtstart, anchor, excluded)
     else:
-        first = parse_api_time(task.get("repeatFirstDate"))
-        dtstart = first.astimezone(zone).date() if first else due_local
-        if due_local < dtstart:
-            dtstart = due_local
-        next_date = next_occurrence_date(rule, dtstart, due_local, _excluded_dates(task, zone))
+        next_date = next_occurrence_date(rule, dtstart, due_local, excluded)
 
     if rule["count"] is not None and rule["count"] <= 1:
         return None
@@ -557,7 +586,7 @@ def ensure_completion_is_safe(task: dict, status: int) -> None:
     outside the supported subset stops here instead of reaching a generic v2
     update, which would end the series.
     """
-    if status == STATUS_DONE and is_recurring_task(task):
+    if status == STATUS_DONE and is_series_head(task):
         recurring_completion_plan(task, now_api_time())
 
 
@@ -922,7 +951,7 @@ def apply_locally(kind: str, payload: dict) -> None:
             if task.get("id") != payload["taskId"]:
                 continue
             plan = None
-            if target == STATUS_DONE and is_recurring_task(task):
+            if target == STATUS_DONE and is_series_head(task):
                 # Mirror the transaction the replay will send, so the panel
                 # shows the next occurrence rather than a vanished task.
                 with contextlib.suppress(TickTickError):
@@ -986,7 +1015,7 @@ def replay(entry: dict, session: dict) -> None:
     elif kind in ("complete", "reopen"):
         task = dict(find_task(payload["taskId"], session))
         target = STATUS_DONE if kind == "complete" else STATUS_TODO
-        if target == STATUS_DONE and is_recurring_task(task):
+        if target == STATUS_DONE and is_series_head(task):
             # Recomputed against the record as it stands now, not as it stood
             # when the write was queued — the series may have moved since.
             plan = recurring_completion_plan(task, payload.get("completedTime") or now_api_time())
@@ -1339,7 +1368,7 @@ def set_task_status(task_id: str, status: int) -> dict:
 
     def call(session):
         task = dict(find_task(task_id, session))
-        if status == STATUS_DONE and is_recurring_task(task):
+        if status == STATUS_DONE and is_series_head(task):
             plan = recurring_completion_plan(task, now_api_time())
             if plan is not None:
                 holder["task"] = plan["series"]
