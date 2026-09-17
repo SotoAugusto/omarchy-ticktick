@@ -1087,328 +1087,358 @@ Panel {
             Repeater {
               model: root.displayTasks
 
-              Rectangle {
-                id: taskRow
+              // The delegate is a column so a rule can be drawn above the row
+              // without disturbing it: the row below keeps its own geometry
+              // and every taskRow.* binding inside it still resolves.
+              Column {
+                id: taskCell
                 required property var modelData
                 required property int index
-                readonly property bool selected: root.isCursorOn("task", index)
-                readonly property bool pending: modelData.ghost === true
-                readonly property bool late: !pending && Model.isOverdue(modelData, root.nowDate)
-                readonly property string tier: Model.dueTier(modelData, root.nowDate)
-                readonly property string tagHex: Model.tagColor(modelData, root.tagsById)
-                readonly property string tagName: Model.tagLabel(modelData, root.tagsById)
-                readonly property var taskSubtasks: Model.subtasks(modelData)
-                readonly property bool hasDetails: Model.hasDetails(modelData)
-                readonly property bool expanded: hasDetails
-                  && root.expandedTaskId === String(modelData.id)
+                spacing: 0
 
-                width: content.width
-                height: Style.space(26) + (expanded ? detailColumn.height : 0)
-                radius: Style.space(4)
-                color: (taskHover.containsMouse || taskRow.selected)
-                  ? Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.08)
-                  : "transparent"
-                // Hover tints, the keyboard cursor outlines. Two different
-                // states deserve two different marks, not two strengths of
-                // the same one.
-                border.width: taskRow.selected ? 1 : 0
-                border.color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.55)
+                // The first late row, and only when the day sits above it.
+                readonly property bool startsBacklog: index > 0
+                  && modelData.ghost !== true
+                  && Model.isOverdue(modelData, root.nowDate)
+                  && !Model.isOverdue(root.displayTasks[index - 1], root.nowDate)
 
-                // Row-wide hover for the highlight only. It deliberately
-                // accepts no buttons: completion is irreversible from here,
-                // so the row must not be a 300px-wide destructive target.
-                MouseArea {
-                  id: taskHover
-                  anchors.fill: parent
-                  hoverEnabled: true
-                  acceptedButtons: Qt.NoButton
-                  // Hover takes the cursor so keyboard and mouse never
-                  // disagree about which row is current. Over an open task,
-                  // only the title band speaks for the task — the strips
-                  // below it are the subtasks', and they sync themselves.
-                  onContainsMouseChanged: taskHover.followHover()
-                  onPositionChanged: taskHover.followHover()
-                  function followHover() {
-                    if (!containsMouse) return
-                    if (taskRow.expanded && mouseY >= Style.space(26)) return
-                    root.cursorActive = false
-                    root.syncCursorTo("task", taskRow.index)
-                  }
-                }
+                Item {
+                  width: content.width
+                  height: taskCell.startsBacklog ? Style.space(14) : 0
+                  visible: taskCell.startsBacklog
 
-                Row {
-                  // The title band keeps the height it had before tasks could
-                  // open: expansion adds a section below it, it does not
-                  // stretch the line the checkbox lives on.
-                  anchors.top: parent.top
-                  anchors.left: parent.left
-                  anchors.right: parent.right
-                  height: Style.space(26)
-                  anchors.leftMargin: Style.space(6)
-                  anchors.rightMargin: Style.space(6)
-                  spacing: Style.space(8)
-
-                  // The only thing that completes a task. Small and
-                  // deliberate, because there is no undo in the panel.
-                  Item {
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: Style.space(18)
-                    height: Style.space(18)
-
-                    Text {
-                      anchors.centerIn: parent
-                      opacity: taskRow.pending ? 0.45 : 1
-                      text: circleHover.containsMouse ? "" : ""
-                      color: taskRow.late ? Color.accent : root.muted
-                      font.family: Style.font.family
-                      font.pixelSize: Style.font.icon
-                    }
-
-                    MouseArea {
-                      id: circleHover
-                      anchors.fill: parent
-                      hoverEnabled: true
-                      cursorShape: Qt.PointingHandCursor
-                      onClicked: root.completeTask(taskRow.modelData)
-                    }
-                  }
-
-                  // The task's own tag colour, straight from TickTick.
-                  //
-                  // The column is reserved even when empty. A Row gives an
-                  // invisible child no width, so hiding the dot used to slide
-                  // every untagged title left and break the one vertical line
-                  // the eye follows down the list.
                   Rectangle {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
-                    opacity: taskRow.tagHex === "" ? 0 : 1
-                    width: Style.space(6)
-                    height: Style.space(6)
-                    radius: width / 2
-                    color: taskRow.tagHex === "" ? "transparent" : taskRow.tagHex
-
-                    PanelToolTip {
-                      // The tooltip's Text lives in the shell and defaults to
-                      // AutoText, so the remote tag name is defanged here.
-                      text: Model.plainText(taskRow.tagName)
-                      visible: tagHover.containsMouse && taskRow.tagName !== ""
-                    }
-
-                    MouseArea {
-                      id: tagHover
-                      anchors.fill: parent
-                      hoverEnabled: true
-                    }
-                  }
-
-                  // A title longer than the row is truncated until you point
-                  // at it, and then it scrolls. Only the row under the cursor
-                  // moves: a list where every long row animates at once cannot
-                  // be scanned, which is the whole job of this list.
-                  Item {
-                    id: titleClip
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: parent.width - Style.space(30)
-                      - Style.space(14)
-                      - dueLabel.implicitWidth
-                      - (taskRow.hasDetails ? Style.space(24) : 0)
-                    height: Style.space(26)
-                    clip: true
-
-                    Text {
-                      id: titleText
-                      anchors.verticalCenter: parent.verticalCenter
-                      text: String(taskRow.modelData.title || "")
-                      // Titles come from the server. AutoText would promote
-                      // anything HTML-shaped to rich text, so every Text that
-                      // shows remote strings pins the format down.
-                      textFormat: Text.PlainText
-                      color: taskRow.tier === "upcoming" ? root.muted : root.fg
-                      font.family: Style.font.family
-                      font.pixelSize: Style.font.bodySmall
-                      font.bold: Model.priorityRank(taskRow.modelData) === "high"
-
-                      readonly property bool overflowing: implicitWidth > titleClip.width
-                      readonly property bool scrolling: overflowing
-                        && (taskRow.selected || taskHover.containsMouse)
-
-                      width: scrolling ? implicitWidth : titleClip.width
-                      elide: scrolling ? Text.ElideNone : Text.ElideRight
-
-                      // Leaving mid-scroll would strand the text half off the
-                      // row, so it returns home when it stops.
-                      onScrollingChanged: if (!scrolling) x = 0
-
-                      SequentialAnimation on x {
-                        running: titleText.scrolling
-                        loops: Animation.Infinite
-
-                        PauseAnimation { duration: 700 }
-                        NumberAnimation {
-                          from: 0
-                          to: Math.min(0, titleClip.width - titleText.implicitWidth)
-                          // Constant reading speed, so a longer title takes
-                          // longer rather than moving faster.
-                          duration: Math.max(900, (titleText.implicitWidth - titleClip.width) * 28)
-                          easing.type: Easing.Linear
-                        }
-                        PauseAnimation { duration: 1100 }
-                        NumberAnimation { to: 0; duration: 350; easing.type: Easing.OutCubic }
-                      }
-                    }
-                  }
-
-                  Text {
-                    id: dueLabel
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: taskRow.pending ? "adding…" : Model.dueLabel(taskRow.modelData, root.nowDate)
-                    color: taskRow.tier === "overdue"
-                      ? Color.accent
-                      : (taskRow.tier === "today" ? root.fg : root.muted)
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.caption
-                  }
-
-                  // The only sign a task has something behind it. Present
-                  // whenever details exist — collapsed rows hide their
-                  // description, so without this the feature would be
-                  // invisible until you happened to press `o`. The hit area
-                  // is the full title band, not the glyph: a chevron is a
-                  // target for a pointer, and a 10px one is a target for
-                  // nobody.
-                  Item {
-                    id: detailToggle
-                    visible: taskRow.hasDetails
-                    width: visible ? Style.space(24) : 0
-                    height: Style.space(26)
-
-                    MouseArea {
-                      id: chevronHover
-                      anchors.fill: parent
-                      hoverEnabled: true
-                      cursorShape: Qt.PointingHandCursor
-                      onClicked: root.expandedTaskId = taskRow.expanded
-                        ? ""
-                        : String(taskRow.modelData.id)
-                    }
-
-                    Text {
-                      anchors.centerIn: parent
-                      text: taskRow.expanded ? "\u25BE" : "\u25B8"
-                      color: chevronHover.containsMouse || taskRow.expanded
-                        ? root.fg
-                        : root.muted
-                      font.family: Style.font.family
-                      font.pixelSize: Style.font.bodySmall
-                    }
-
-                    PanelToolTip {
-                      text: taskRow.expanded ? "Hide details (o)" : "Show details (o)"
-                      visible: chevronHover.containsMouse
-                    }
+                    height: 1
+                    color: Qt.rgba(root.muted.r, root.muted.g, root.muted.b, 0.35)
                   }
                 }
 
-                // ---- expanded details: description and subtasks -----------
-                //
-                // Sits below the title band inside the same row rectangle, so
-                // the cursor outline, hover tint, and selection geometry all
-                // keep working while a task is open.
-                Column {
-                  id: detailColumn
-                  visible: taskRow.expanded
-                  height: visible ? implicitHeight : 0
-                  width: parent.width - Style.space(30)
-                  x: Style.space(30)
-                  y: Style.space(26)
-                  spacing: Style.space(6)
+                Rectangle {
+                  id: taskRow
+                  readonly property var modelData: taskCell.modelData
+                  readonly property int index: taskCell.index
+                  readonly property bool selected: root.isCursorOn("task", index)
+                  readonly property bool pending: modelData.ghost === true
+                  readonly property bool late: !pending && Model.isOverdue(modelData, root.nowDate)
+                  readonly property string tier: Model.dueTier(modelData, root.nowDate)
+                  readonly property string tagHex: Model.tagColor(modelData, root.tagsById)
+                  readonly property string tagName: Model.tagLabel(modelData, root.tagsById)
+                  readonly property var taskSubtasks: Model.subtasks(modelData)
+                  readonly property bool hasDetails: Model.hasDetails(modelData)
+                  readonly property bool expanded: hasDetails
+                    && root.expandedTaskId === String(modelData.id)
 
-                  Text {
-                    visible: String(taskRow.modelData.content || "").trim() !== ""
-                    width: parent.width
-                    text: String(taskRow.modelData.content || "").trim()
-                    // Descriptions come from the server and often read as
-                    // markdown; AutoText would promote anything HTML-shaped
-                    // in them to rich text.
-                    textFormat: Text.PlainText
-                    wrapMode: Text.Wrap
-                    // The whole text, not a preview: the panel's own scroll
-                    // is how a long one is read, and a description that
-                    // stops mid-sentence is not a description.
-                    color: root.muted
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.caption
+                  width: content.width
+                  height: Style.space(26) + (expanded ? detailColumn.height : 0)
+                  radius: Style.space(4)
+                  color: (taskHover.containsMouse || taskRow.selected)
+                    ? Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.08)
+                    : "transparent"
+                  // Hover tints, the keyboard cursor outlines. Two different
+                  // states deserve two different marks, not two strengths of
+                  // the same one.
+                  border.width: taskRow.selected ? 1 : 0
+                  border.color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.55)
+
+                  // Row-wide hover for the highlight only. It deliberately
+                  // accepts no buttons: completion is irreversible from here,
+                  // so the row must not be a 300px-wide destructive target.
+                  MouseArea {
+                    id: taskHover
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    acceptedButtons: Qt.NoButton
+                    // Hover takes the cursor so keyboard and mouse never
+                    // disagree about which row is current. Over an open task,
+                    // only the title band speaks for the task — the strips
+                    // below it are the subtasks', and they sync themselves.
+                    onContainsMouseChanged: taskHover.followHover()
+                    onPositionChanged: taskHover.followHover()
+                    function followHover() {
+                      if (!containsMouse) return
+                      if (taskRow.expanded && mouseY >= Style.space(26)) return
+                      root.cursorActive = false
+                      root.syncCursorTo("task", taskRow.index)
+                    }
                   }
 
-                  Repeater {
-                    model: taskRow.taskSubtasks
+                  Row {
+                    // The title band keeps the height it had before tasks could
+                    // open: expansion adds a section below it, it does not
+                    // stretch the line the checkbox lives on.
+                    anchors.top: parent.top
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    height: Style.space(26)
+                    anchors.leftMargin: Style.space(6)
+                    anchors.rightMargin: Style.space(6)
+                    spacing: Style.space(8)
 
-                    // A subtask behaves like a row, not like a label beside a
-                    // tiny checkbox: the whole strip is the hit area, hover
-                    // takes the keyboard cursor, and the cursor highlight is
-                    // the same tint the task rows use.
-                    Rectangle {
-                      id: subtaskRow
-                      required property var modelData
-                      required property int index
-                      readonly property bool itemPending: root.pendingItemIds[modelData.id] === true
-                      readonly property bool selected: root.isCursorOnSubtask(taskRow.index, index)
+                    // The only thing that completes a task. Small and
+                    // deliberate, because there is no undo in the panel.
+                    Item {
+                      anchors.verticalCenter: parent.verticalCenter
+                      width: Style.space(18)
+                      height: Style.space(18)
 
-                      width: detailColumn.width
-                      height: Style.space(22)
-                      radius: Style.space(3)
-                      color: selected
-                        ? Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.08)
-                        : "transparent"
-
-                      opacity: itemPending ? 0.45 : 1
+                      Text {
+                        anchors.centerIn: parent
+                        opacity: taskRow.pending ? 0.45 : 1
+                        text: circleHover.containsMouse ? "" : ""
+                        color: taskRow.late ? Color.accent : root.muted
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.icon
+                      }
 
                       MouseArea {
-                        id: subtaskHover
+                        id: circleHover
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
-                        // Hover takes the cursor so `enter` always acts on
-                        // the row being pointed at, exactly as task rows do.
-                        onContainsMouseChanged: if (containsMouse) {
-                          root.cursorActive = false
-                          root.syncCursorToSubtask(taskRow.index, subtaskRow.index)
-                        }
-                        onClicked: root.toggleSubtask(taskRow.modelData, subtaskRow.modelData)
+                        onClicked: root.completeTask(taskRow.modelData)
+                      }
+                    }
+
+                    // The task's own tag colour, straight from TickTick.
+                    //
+                    // The column is reserved even when empty. A Row gives an
+                    // invisible child no width, so hiding the dot used to slide
+                    // every untagged title left and break the one vertical line
+                    // the eye follows down the list.
+                    Rectangle {
+                      anchors.verticalCenter: parent.verticalCenter
+                      opacity: taskRow.tagHex === "" ? 0 : 1
+                      width: Style.space(6)
+                      height: Style.space(6)
+                      radius: width / 2
+                      color: taskRow.tagHex === "" ? "transparent" : taskRow.tagHex
+
+                      PanelToolTip {
+                        // The tooltip's Text lives in the shell and defaults to
+                        // AutoText, so the remote tag name is defanged here.
+                        text: Model.plainText(taskRow.tagName)
+                        visible: tagHover.containsMouse && taskRow.tagName !== ""
                       }
 
-                      Row {
+                      MouseArea {
+                        id: tagHover
                         anchors.fill: parent
-                        anchors.leftMargin: Style.space(4)
-                        anchors.rightMargin: Style.space(4)
-                        spacing: Style.space(8)
+                        hoverEnabled: true
+                      }
+                    }
 
-                        Item {
-                          anchors.verticalCenter: parent.verticalCenter
-                          width: Style.space(18)
-                          height: Style.space(18)
+                    // A title longer than the row is truncated until you point
+                    // at it, and then it scrolls. Only the row under the cursor
+                    // moves: a list where every long row animates at once cannot
+                    // be scanned, which is the whole job of this list.
+                    Item {
+                      id: titleClip
+                      anchors.verticalCenter: parent.verticalCenter
+                      width: parent.width - Style.space(30)
+                        - Style.space(14)
+                        - dueLabel.implicitWidth
+                        - (taskRow.hasDetails ? Style.space(24) : 0)
+                      height: Style.space(26)
+                      clip: true
 
-                          Text {
-                            anchors.centerIn: parent
-                            text: subtaskRow.modelData.done ? "\u2611" : "\u2610"
-                            color: subtaskRow.modelData.done ? Color.accent : root.muted
-                            font.family: Style.font.family
-                            font.pixelSize: Style.font.bodySmall
+                      Text {
+                        id: titleText
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: String(taskRow.modelData.title || "")
+                        // Titles come from the server. AutoText would promote
+                        // anything HTML-shaped to rich text, so every Text that
+                        // shows remote strings pins the format down.
+                        textFormat: Text.PlainText
+                        color: taskRow.tier === "upcoming" ? root.muted : root.fg
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.bodySmall
+                        font.bold: Model.priorityRank(taskRow.modelData) === "high"
+
+                        readonly property bool overflowing: implicitWidth > titleClip.width
+                        readonly property bool scrolling: overflowing
+                          && (taskRow.selected || taskHover.containsMouse)
+
+                        width: scrolling ? implicitWidth : titleClip.width
+                        elide: scrolling ? Text.ElideNone : Text.ElideRight
+
+                        // Leaving mid-scroll would strand the text half off the
+                        // row, so it returns home when it stops.
+                        onScrollingChanged: if (!scrolling) x = 0
+
+                        SequentialAnimation on x {
+                          running: titleText.scrolling
+                          loops: Animation.Infinite
+
+                          PauseAnimation { duration: 700 }
+                          NumberAnimation {
+                            from: 0
+                            to: Math.min(0, titleClip.width - titleText.implicitWidth)
+                            // Constant reading speed, so a longer title takes
+                            // longer rather than moving faster.
+                            duration: Math.max(900, (titleText.implicitWidth - titleClip.width) * 28)
+                            easing.type: Easing.Linear
                           }
+                          PauseAnimation { duration: 1100 }
+                          NumberAnimation { to: 0; duration: 350; easing.type: Easing.OutCubic }
+                        }
+                      }
+                    }
+
+                    Text {
+                      id: dueLabel
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: taskRow.pending ? "adding…" : Model.dueLabel(taskRow.modelData, root.nowDate)
+                      color: taskRow.tier === "overdue"
+                        ? Color.accent
+                        : (taskRow.tier === "today" ? root.fg : root.muted)
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.caption
+                    }
+
+                    // The only sign a task has something behind it. Present
+                    // whenever details exist — collapsed rows hide their
+                    // description, so without this the feature would be
+                    // invisible until you happened to press `o`. The hit area
+                    // is the full title band, not the glyph: a chevron is a
+                    // target for a pointer, and a 10px one is a target for
+                    // nobody.
+                    Item {
+                      id: detailToggle
+                      visible: taskRow.hasDetails
+                      width: visible ? Style.space(24) : 0
+                      height: Style.space(26)
+
+                      MouseArea {
+                        id: chevronHover
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.expandedTaskId = taskRow.expanded
+                          ? ""
+                          : String(taskRow.modelData.id)
+                      }
+
+                      Text {
+                        anchors.centerIn: parent
+                        text: taskRow.expanded ? "\u25BE" : "\u25B8"
+                        color: chevronHover.containsMouse || taskRow.expanded
+                          ? root.fg
+                          : root.muted
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.bodySmall
+                      }
+
+                      PanelToolTip {
+                        text: taskRow.expanded ? "Hide details (o)" : "Show details (o)"
+                        visible: chevronHover.containsMouse
+                      }
+                    }
+                  }
+
+                  // ---- expanded details: description and subtasks -----------
+                  //
+                  // Sits below the title band inside the same row rectangle, so
+                  // the cursor outline, hover tint, and selection geometry all
+                  // keep working while a task is open.
+                  Column {
+                    id: detailColumn
+                    visible: taskRow.expanded
+                    height: visible ? implicitHeight : 0
+                    width: parent.width - Style.space(30)
+                    x: Style.space(30)
+                    y: Style.space(26)
+                    spacing: Style.space(6)
+
+                    Text {
+                      visible: String(taskRow.modelData.content || "").trim() !== ""
+                      width: parent.width
+                      text: String(taskRow.modelData.content || "").trim()
+                      // Descriptions come from the server and often read as
+                      // markdown; AutoText would promote anything HTML-shaped
+                      // in them to rich text.
+                      textFormat: Text.PlainText
+                      wrapMode: Text.Wrap
+                      // The whole text, not a preview: the panel's own scroll
+                      // is how a long one is read, and a description that
+                      // stops mid-sentence is not a description.
+                      color: root.muted
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.caption
+                    }
+
+                    Repeater {
+                      model: taskRow.taskSubtasks
+
+                      // A subtask behaves like a row, not like a label beside a
+                      // tiny checkbox: the whole strip is the hit area, hover
+                      // takes the keyboard cursor, and the cursor highlight is
+                      // the same tint the task rows use.
+                      Rectangle {
+                        id: subtaskRow
+                        required property var modelData
+                        required property int index
+                        readonly property bool itemPending: root.pendingItemIds[modelData.id] === true
+                        readonly property bool selected: root.isCursorOnSubtask(taskRow.index, index)
+
+                        width: detailColumn.width
+                        height: Style.space(22)
+                        radius: Style.space(3)
+                        color: selected
+                          ? Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.08)
+                          : "transparent"
+
+                        opacity: itemPending ? 0.45 : 1
+
+                        MouseArea {
+                          id: subtaskHover
+                          anchors.fill: parent
+                          hoverEnabled: true
+                          cursorShape: Qt.PointingHandCursor
+                          // Hover takes the cursor so `enter` always acts on
+                          // the row being pointed at, exactly as task rows do.
+                          onContainsMouseChanged: if (containsMouse) {
+                            root.cursorActive = false
+                            root.syncCursorToSubtask(taskRow.index, subtaskRow.index)
+                          }
+                          onClicked: root.toggleSubtask(taskRow.modelData, subtaskRow.modelData)
                         }
 
-                        Text {
-                          anchors.verticalCenter: parent.verticalCenter
-                          width: parent.width - Style.space(26)
-                          elide: Text.ElideRight
-                          text: subtaskRow.modelData.title
-                          // Subtask titles come from the server; same rule as
-                          // every other remote string here.
-                          textFormat: Text.PlainText
-                          color: subtaskRow.modelData.done ? root.muted : root.fg
-                          font.family: Style.font.family
-                          font.pixelSize: Style.font.bodySmall
-                          font.strikeout: subtaskRow.modelData.done
+                        Row {
+                          anchors.fill: parent
+                          anchors.leftMargin: Style.space(4)
+                          anchors.rightMargin: Style.space(4)
+                          spacing: Style.space(8)
+
+                          Item {
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: Style.space(18)
+                            height: Style.space(18)
+
+                            Text {
+                              anchors.centerIn: parent
+                              text: subtaskRow.modelData.done ? "\u2611" : "\u2610"
+                              color: subtaskRow.modelData.done ? Color.accent : root.muted
+                              font.family: Style.font.family
+                              font.pixelSize: Style.font.bodySmall
+                            }
+                          }
+
+                          Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: parent.width - Style.space(26)
+                            elide: Text.ElideRight
+                            text: subtaskRow.modelData.title
+                            // Subtask titles come from the server; same rule as
+                            // every other remote string here.
+                            textFormat: Text.PlainText
+                            color: subtaskRow.modelData.done ? root.muted : root.fg
+                            font.family: Style.font.family
+                            font.pixelSize: Style.font.bodySmall
+                            font.strikeout: subtaskRow.modelData.done
+                          }
                         }
                       }
                     }
