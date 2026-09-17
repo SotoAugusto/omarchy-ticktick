@@ -363,5 +363,168 @@ class RecurrenceTimezoneTests(unittest.TestCase):
         self.assertEqual(plan["series"]["dueDate"], "2026-10-31T00:00:00.000+0000")
 
 
+class MaterialisedOccurrenceTests(unittest.TestCase):
+    """A dated instance of a series is finished, not rolled forward.
+
+    TickTick materialises future occurrences as tasks of their own: they link
+    back with `repeatTaskId`, or carry `repeatFirstDate`, and hold no rule.
+    Completing one is an ordinary write. Treating every recurrence marker as a
+    live series refuses these, which breaks completions that work today.
+    """
+
+    def setUp(self):
+        self.cli = load_cli()
+        self.globals = self.cli["set_task_status"].__globals__
+        self.dispatched = []
+
+        def fake_batch_task(_session, add=None, update=None, delete=None):
+            self.dispatched.append({"add": add or [], "update": update or [], "delete": delete or []})
+            return {}
+
+        def fake_with_session(callback):
+            session = {"token": "<REDACTED>"}
+            return callback(session), session
+
+        self.globals["batch_task"] = fake_batch_task
+        self.globals["with_session"] = fake_with_session
+        self.globals["now_api_time"] = lambda: "2026-09-17T10:00:00.000+0000"
+
+    def use_task(self, task):
+        self.globals["cached_task"] = lambda _task_id: task
+        self.globals["find_task"] = lambda _task_id, _session: task
+
+    def test_series_head_is_the_task_carrying_the_rule(self):
+        head = self.cli["is_series_head"]
+        self.assertTrue(head({"repeatFlag": "RRULE:FREQ=WEEKLY"}))
+        # An occurrence links back to its series and is not one itself.
+        self.assertFalse(head({"repeatTaskId": "series-1"}))
+        self.assertFalse(head({"repeatTaskId": "series-1", "repeatFlag": "RRULE:FREQ=WEEKLY"}))
+        # Markers without a rule leave nothing to advance.
+        self.assertFalse(head({"repeatFirstDate": "2026-09-02T08:00:00.000+0000"}))
+        self.assertFalse(head({"repeatFrom": "2", "repeatFlag": ""}))
+        self.assertFalse(head({"id": "plain"}))
+
+    def occurrence(self, **fields):
+        return {
+            "id": "occurrence-1",
+            "projectId": "project-1",
+            "status": self.cli["STATUS_TODO"],
+            "dueDate": "2026-09-21T09:00:00.000+0000",
+            "timeZone": "Europe/Paris",
+            **fields,
+        }
+
+    def assert_plain_completion(self, task):
+        self.use_task(task)
+        result = self.cli["set_task_status"](task["id"], self.cli["STATUS_DONE"])
+        self.assertEqual(len(self.dispatched), 1)
+        batch = self.dispatched[0]
+        self.assertEqual(batch["add"], [], "an occurrence must not spawn a second task")
+        self.assertEqual(len(batch["update"]), 1)
+        self.assertEqual(batch["update"][0]["status"], self.cli["STATUS_DONE"])
+        self.assertEqual(result["id"], task["id"])
+
+    def test_an_occurrence_linked_to_its_series_completes_plainly(self):
+        self.assert_plain_completion(self.occurrence(repeatTaskId="series-1"))
+
+    def test_an_occurrence_with_only_a_first_date_completes_plainly(self):
+        self.assert_plain_completion(
+            self.occurrence(repeatFirstDate="2026-08-31T09:00:00.000+0000")
+        )
+
+
+class RepeatFromCompletionTests(unittest.TestCase):
+    """repeatFrom="2" alongside a day filter, which real accounts are full of."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.cli = load_cli()
+
+    def plan(self, completed_time, **fields):
+        task = {
+            "id": "task-1",
+            "repeatFrom": "2",
+            "timeZone": "Europe/Paris",
+            **fields,
+        }
+        return self.cli["plan_recurring_completion"](task, completed_time)
+
+    def test_a_weekday_rule_lands_on_its_own_day(self):
+        # Sunday noon in Paris, weekly on Sundays, finished on the day.
+        plan = self.plan(
+            "2026-09-20T11:00:00.000+0000",
+            repeatFlag="RRULE:FREQ=WEEKLY;BYDAY=SU",
+            dueDate="2026-09-20T10:00:00.000+0000",
+        )
+        self.assertEqual(plan["series"]["dueDate"], "2026-09-27T10:00:00.000+0000")
+
+    def test_finishing_late_still_lands_on_the_next_allowed_day(self):
+        # Ticked on the Tuesday: the next Sunday, not Tuesday plus a week.
+        plan = self.plan(
+            "2026-09-22T18:00:00.000+0000",
+            repeatFlag="RRULE:FREQ=WEEKLY;BYDAY=SU",
+            dueDate="2026-09-20T10:00:00.000+0000",
+        )
+        self.assertEqual(plan["series"]["dueDate"], "2026-09-27T10:00:00.000+0000")
+
+    def test_a_dated_yearly_rule_keeps_its_month_and_day(self):
+        plan = self.plan(
+            "2026-09-26T08:00:00.000+0000",
+            repeatFlag="RRULE:FREQ=YEARLY;BYMONTH=9;BYMONTHDAY=26",
+            isAllDay=True,
+            dueDate="2026-09-25T22:00:00.000+0000",
+        )
+        # Midnight Paris on the 26th, a year on.
+        self.assertEqual(plan["series"]["dueDate"], "2027-09-25T22:00:00.000+0000")
+
+    def test_a_positional_monthly_rule_keeps_its_position(self):
+        # Third Friday of January 2027 -> third Friday of February.
+        plan = self.plan(
+            "2027-01-15T12:00:00.000+0000",
+            repeatFlag="RRULE:FREQ=MONTHLY;BYDAY=3FR",
+            dueDate="2027-01-15T09:00:00.000+0000",
+        )
+        self.assertEqual(plan["series"]["dueDate"], "2027-02-19T09:00:00.000+0000")
+
+    def test_a_series_dated_ahead_is_not_dragged_back_to_today(self):
+        # An imported birthday: finishing it early must not move it to
+        # a year from this afternoon.
+        plan = self.plan(
+            "2026-09-17T10:00:00.000+0000",
+            repeatFlag="RRULE:FREQ=YEARLY",
+            isAllDay=True,
+            dueDate="2041-03-10T23:00:00.000+0000",
+        )
+        self.assertEqual(plan["series"]["dueDate"], "2042-03-10T23:00:00.000+0000")
+
+    def test_an_overdue_bare_rule_still_counts_from_the_completion(self):
+        # No day filter and already past: "a year after I did it" is the
+        # whole point of repeat-from-completion, so this one does drift.
+        plan = self.plan(
+            "2026-09-17T10:00:00.000+0000",
+            repeatFlag="RRULE:FREQ=YEARLY",
+            dueDate="2025-03-28T09:00:00.000+0000",
+        )
+        self.assertEqual(plan["series"]["dueDate"][:10], "2027-09-17")
+
+    def test_a_weekday_rule_keeps_wall_clock_time_across_a_dst_boundary(self):
+        # Noon Paris on 18 October; clocks go back on the 25th, so the same
+        # noon is an hour earlier in UTC.
+        plan = self.plan(
+            "2026-10-18T11:00:00.000+0000",
+            repeatFlag="RRULE:FREQ=WEEKLY;BYDAY=SU",
+            dueDate="2026-10-18T10:00:00.000+0000",
+        )
+        self.assertEqual(plan["series"]["dueDate"], "2026-10-25T11:00:00.000+0000")
+
+    def test_an_until_that_has_passed_ends_the_series(self):
+        plan = self.plan(
+            "2026-09-20T11:00:00.000+0000",
+            repeatFlag="RRULE:FREQ=WEEKLY;BYDAY=SU;UNTIL=20260922T000000Z",
+            dueDate="2026-09-20T10:00:00.000+0000",
+        )
+        self.assertIsNone(plan)
+
+
 if __name__ == "__main__":
     unittest.main()
