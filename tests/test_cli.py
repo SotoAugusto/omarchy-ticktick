@@ -53,15 +53,6 @@ class RecurringCompletionTests(unittest.TestCase):
         self.globals["cached_task"] = lambda _task_id: task
         self.globals["find_task"] = lambda _task_id, _session: task
 
-    def test_recurring_markers_are_recognized(self):
-        recurring = self.cli["is_recurring_task"]
-        self.assertTrue(recurring({"repeatFlag": "RRULE:FREQ=DAILY"}))
-        self.assertTrue(recurring({"repeatFrom": "2", "repeatFlag": ""}))
-        self.assertTrue(recurring({"repeatTaskId": "series-1"}))
-        self.assertTrue(recurring({"repeatFirstDate": "2026-09-02T08:00:00.000+0000"}))
-        self.assertFalse(recurring({"repeatFrom": "0"}))
-        self.assertFalse(recurring({"id": "plain"}))
-
     def recurring(self, **fields):
         defaults = {
             "repeatFlag": "RRULE:FREQ=DAILY;INTERVAL=1",
@@ -399,10 +390,28 @@ class MaterialisedOccurrenceTests(unittest.TestCase):
         # An occurrence links back to its series and is not one itself.
         self.assertFalse(head({"repeatTaskId": "series-1"}))
         self.assertFalse(head({"repeatTaskId": "series-1", "repeatFlag": "RRULE:FREQ=WEEKLY"}))
-        # Markers without a rule leave nothing to advance.
+        # A bare first date with no rule is a materialised occurrence.
         self.assertFalse(head({"repeatFirstDate": "2026-09-02T08:00:00.000+0000"}))
-        self.assertFalse(head({"repeatFrom": "2", "repeatFlag": ""}))
+        self.assertFalse(head({"repeatFrom": "2", "repeatFirstDate": "2026-09-02T08:00:00.000+0000"}))
+        # A series that repeats from completion can leave the flag empty and
+        # keep only its mode: with no occurrence markers that is a head, and
+        # finishing it must refuse rather than end the series plainly.
+        self.assertTrue(head({"repeatFrom": "2", "repeatFlag": ""}))
+        self.assertFalse(head({"repeatFrom": "0"}))
         self.assertFalse(head({"id": "plain"}))
+
+    def test_an_empty_flag_series_is_refused_not_completed_plainly(self):
+        task = self.occurrence(
+            repeatFrom="2",
+            repeatFlag="",
+            dueDate="2026-09-20T10:00:00.000+0000",
+        )
+        self.use_task(task)
+
+        with self.assertRaisesRegex(self.cli["TickTickError"], "no repeat rule"):
+            self.cli["set_task_status"](task["id"], self.cli["STATUS_DONE"])
+
+        self.assertEqual(self.dispatched, [])
 
     def occurrence(self, **fields):
         return {
@@ -506,6 +515,17 @@ class RepeatFromCompletionTests(unittest.TestCase):
             dueDate="2025-03-28T09:00:00.000+0000",
         )
         self.assertEqual(plan["series"]["dueDate"][:10], "2027-09-17")
+
+    def test_a_bare_rule_steps_over_a_skipped_day(self):
+        # Landing on an exDate would undo the skip, so the bare arithmetic
+        # moves past it just as the day-filter scan does.
+        plan = self.plan(
+            "2026-09-20T11:00:00.000+0000",
+            repeatFlag="RRULE:FREQ=DAILY;INTERVAL=1",
+            dueDate="2026-09-20T10:00:00.000+0000",
+            exDate=["2026-09-21T10:00:00.000+0000"],
+        )
+        self.assertEqual(plan["series"]["dueDate"], "2026-09-22T10:00:00.000+0000")
 
     def test_a_weekday_rule_keeps_wall_clock_time_across_a_dst_boundary(self):
         # Noon Paris on 18 October; clocks go back on the 25th, so the same
