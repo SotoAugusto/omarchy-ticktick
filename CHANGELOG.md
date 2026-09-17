@@ -2,8 +2,10 @@
 
 ## Unreleased
 
-### Changed
+### Fixed
 
+- Completing a recurring task rolls the series forward to its next
+  occurrence instead of ending the whole series.
 - The panel opens on today: late work no longer fills the list before
   today's tasks are reached. It sits under its own rule carrying the late
   count, newest slip first.
