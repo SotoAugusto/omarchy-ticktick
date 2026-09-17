@@ -23,6 +23,11 @@ jobs:
       - name: Model tests
         run: node --test tests/model.test.js
 
+      # The recurring-completion paths of the CLI, against a fake session: no
+      # credentials read, nothing sent to TickTick.
+      - name: CLI tests
+        run: python3 tests/test_cli.py
+
       - name: CLI compiles
         run: python3 -m py_compile bin/omarchy-ticktick
 

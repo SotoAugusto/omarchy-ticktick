@@ -268,6 +268,10 @@ Item {
     pendingIds = next
   }
 
+  // Recurring tasks complete here too. The CLI turns one into the compound
+  // write TickTick's own client makes — a finished occurrence plus the series
+  // moved on — and refuses only the repeat rules it cannot compute, with its
+  // own message. So this does not second-guess it by rule shape.
   function completeTask(task) {
     if (!task || !task.id) return
     markPending(task.id)

@@ -36,6 +36,19 @@ function span(startLocal, dueLocal, over) {
   }, over))
 }
 
+test('recurring tasks are recognized from every TickTick recurrence marker', () => {
+  assert.equal(Model.isRecurringTask({ repeatFlag: 'RRULE:FREQ=DAILY' }), true)
+  assert.equal(Model.isRecurringTask({ repeatFrom: '2', repeatFlag: '' }), true)
+  assert.equal(Model.isRecurringTask({ repeatTaskId: 'series-1' }), true)
+  assert.equal(Model.isRecurringTask({ repeatFirstDate: '2026-08-12T00:00:00.000+0000' }), true)
+})
+
+test('plain tasks and zero repeatFrom are not recurring', () => {
+  assert.equal(Model.isRecurringTask({ repeatFrom: '0' }), false)
+  assert.equal(Model.isRecurringTask(task()), false)
+  assert.equal(Model.isRecurringTask(null), false)
+})
+
 // --- dates ---------------------------------------------------------------
 
 test('parseApiDate handles the +0000 offset TickTick sends', () => {

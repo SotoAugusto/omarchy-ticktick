@@ -143,6 +143,18 @@ function horizonDays(horizon) {
   return 0
 }
 
+// TickTick's ordinary recurring task carries an RRULE in repeatFlag, but a
+// series that repeats from completion can leave that flag empty and retain
+// only its relationship fields. repeatFrom 0 also appears on plain tasks, so
+// only a non-zero mode is meaningful by itself.
+function isRecurringTask(task) {
+  if (!task || typeof task !== "object") return false
+  if (task.repeatTaskId || task.repeatFirstDate) return true
+  if (task.repeatFrom !== undefined && task.repeatFrom !== null
+      && String(task.repeatFrom) !== "" && String(task.repeatFrom) !== "0") return true
+  return String(task.repeatFlag || "").trim() !== ""
+}
+
 function isOpen(task) {
   return task && task.status !== STATUS_DONE && task.status !== STATUS_WONT_DO && !task.deleted
 }
@@ -1376,6 +1388,7 @@ if (typeof module !== "undefined") {
     horizonIndex: horizonIndex,
     horizonForDue: horizonForDue,
     widerHorizon: widerHorizon,
+    isRecurringTask: isRecurringTask,
     isOpen: isOpen,
     isOverdue: isOverdue,
     dueTasks: dueTasks,
