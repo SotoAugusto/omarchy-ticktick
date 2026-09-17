@@ -147,11 +147,15 @@ function isOpen(task) {
   return task && task.status !== STATUS_DONE && task.status !== STATUS_WONT_DO && !task.deleted
 }
 
+// Late is a day, not an hour. A task due at 10:30 today is still today's
+// work at 18:00: the panel is a day's list, and marking it late there --
+// painting it, counting it, filing it under the backlog rule -- says the
+// same thing about it as about something due last March. The hour still
+// shows in the row's own label, which is where it means something.
 function isOverdue(task, now) {
   var due = taskDueDate(task)
   if (!due) return false
-  if (task.isAllDay) return dateStamp(due) < dateStamp(now)
-  return due.getTime() < now.getTime()
+  return dateStamp(due) < dateStamp(now)
 }
 
 // Tasks worth showing: open, dated, and landing inside the horizon —
