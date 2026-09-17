@@ -387,6 +387,20 @@ Panel {
   readonly property int hiddenTaskCount: Math.max(0, visibleTasks.length - listedTasks.length)
   readonly property int overdueCount: Model.overdueCount(visibleTasks, nowDate)
 
+  // Whether the backlog rule renders below. Same condition as the
+  // delegate's startsBacklog, over the same list: when maxTasks cuts the
+  // list inside today's work, no rule draws and the header carries the
+  // late count instead so it never goes invisible.
+  readonly property bool backlogRuleVisible: {
+    for (var i = 0; i < displayTasks.length; i++) {
+      var t = displayTasks[i]
+      if (!t || t.ghost === true || !Model.isOverdue(t, nowDate)) continue
+      if (i === 0 || displayTasks[i - 1].ghost === true
+          || !Model.isOverdue(displayTasks[i - 1], nowDate)) return true
+    }
+    return false
+  }
+
   // Tag colours are the only colours TickTick actually stores for a task,
   // so they are the only ones taken literally. Due state is painted from the
   // theme instead — a hardcoded red would fight every Omarchy theme.
@@ -1066,12 +1080,16 @@ Panel {
               }
 
               // The late count belongs to the backlog, which has its own rule
-              // further down. Up here, the total is what the section is.
+              // further down — unless the rule itself is cut off by maxTasks,
+              // when the header carries it so late work stays signalled.
               PanelSectionHeader {
                 anchors.right: parent.right
                 anchors.baseline: sectionLabel_tasks.baseline
-                text: String(root.visibleTasks.length)
-                foreground: root.muted
+                text: root.overdueCount > 0 && !root.backlogRuleVisible
+                  ? root.visibleTasks.length + " · " + root.overdueCount + " LATE"
+                  : String(root.visibleTasks.length)
+                foreground: root.overdueCount > 0 && !root.backlogRuleVisible
+                  ? Color.accent : root.muted
               }
             }
 
@@ -1098,10 +1116,13 @@ Panel {
 
                 // The first late row -- including when late work opens the
                 // list, because the rule carries the count and the backlog
-                // should be named whether or not the day sits above it.
+                // should be named whether or not the day sits above it. A
+                // dated ghost above never heads the backlog, so one below it
+                // still starts the rule.
                 readonly property bool startsBacklog: modelData.ghost !== true
                   && Model.isOverdue(modelData, root.nowDate)
                   && (index === 0
+                    || root.displayTasks[index - 1].ghost === true
                     || !Model.isOverdue(root.displayTasks[index - 1], root.nowDate))
 
                 Item {
