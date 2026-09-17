@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Completing a recurring task rolls the series forward to its next
+  occurrence instead of ending the whole series.
+- The panel opens on today: late work no longer fills the list before
+  today's tasks are reached. It sits under its own rule carrying the late
+  count, newest slip first.
+- Late is a day behind, not an hour past. A timed task due at 10:30 counts
+  as today until midnight; its hour still shows in the row's due label.
+
 ## 0.5.2 — 2026-09-13
 
 ### Fixed

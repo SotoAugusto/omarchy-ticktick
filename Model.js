@@ -159,11 +159,15 @@ function isOpen(task) {
   return task && task.status !== STATUS_DONE && task.status !== STATUS_WONT_DO && !task.deleted
 }
 
+// Late is a day, not an hour. A task due at 10:30 today is still today's
+// work at 18:00: the panel is a day's list, and marking it late there --
+// painting it, counting it, filing it under the backlog rule -- says the
+// same thing about it as about something due last March. The hour still
+// shows in the row's own label, which is where it means something.
 function isOverdue(task, now) {
   var due = taskDueDate(task)
   if (!due) return false
-  if (task.isAllDay) return dateStamp(due) < dateStamp(now)
-  return due.getTime() < now.getTime()
+  return dateStamp(due) < dateStamp(now)
 }
 
 // Tasks worth showing: open, dated, and landing inside the horizon —
@@ -193,9 +197,24 @@ function dueTasks(tasks, options) {
   }
 
   result.sort(function(a, b) {
-    var aLate = isOverdue(a, now) ? 0 : 1
-    var bLate = isOverdue(b, now) ? 0 : 1
+    // Today first, the backlog under it. A long backlog otherwise fills the
+    // panel's row budget on its own and today's work never reaches the list
+    // -- the count of late work is already in the header, and a task that
+    // has been late for months is not more urgent than the meeting at noon.
+    var aLate = isOverdue(a, now) ? 1 : 0
+    var bLate = isOverdue(b, now) ? 1 : 0
     if (aLate !== bLate) return aLate - bLate
+
+    // Inside the backlog the newest slip comes first: what went late
+    // yesterday is still the work you meant to do, while something a year
+    // late is a decision to take, not a row to act on this morning.
+    if (aLate === 1) {
+      var aSlip = taskTimeKey(a)
+      var bSlip = taskTimeKey(b)
+      var aSlipTime = aSlip ? aSlip.getTime() : 0
+      var bSlipTime = bSlip ? bSlip.getTime() : 0
+      if (aSlipTime !== bSlipTime) return bSlipTime - aSlipTime
+    }
 
     // A duration is an appointment: it is pinned to a moment you have to
     // show up for, while a plain due time floats anywhere in its day. Among

@@ -95,13 +95,23 @@ test('the Next 7 days horizon reaches a week out but not past it', () => {
   assert.deepEqual(due.map(t => t.id), ['in6'])
 })
 
-test('overdue tasks sort ahead of everything due today', () => {
+test("today sorts ahead of the backlog, so a long backlog cannot bury it", () => {
   const tasks = [
     task({ id: 'today', dueDate: '2026-08-12T00:00:00.000+0000' }),
     task({ id: 'late', dueDate: '2026-08-09T00:00:00.000+0000' })
   ]
   const due = Model.dueTasks(tasks, { now: NOW, horizon: 'Today' })
-  assert.deepEqual(due.map(t => t.id), ['late', 'today'])
+  assert.deepEqual(due.map(t => t.id), ['today', 'late'])
+})
+
+test('the backlog runs newest slip first, under the day', () => {
+  const tasks = [
+    task({ id: 'older', dueDate: '2026-08-04T00:00:00.000+0000' }),
+    task({ id: 'today', dueDate: '2026-08-12T00:00:00.000+0000' }),
+    task({ id: 'recent', dueDate: '2026-08-09T00:00:00.000+0000' })
+  ]
+  const due = Model.dueTasks(tasks, { now: NOW, horizon: 'Today' })
+  assert.deepEqual(due.map(t => t.id), ['today', 'recent', 'older'])
 })
 
 test('includeOverdue false hides the backlog', () => {
@@ -136,9 +146,18 @@ test('an all-day task due today is not overdue at 2pm', () => {
   assert.equal(Model.isOverdue(task({ dueDate: '2026-08-12T00:00:00.000+0000' }), NOW), false)
 })
 
-test('a timed task from this morning is overdue at 2pm', () => {
+test('a timed task from this morning is not overdue at 2pm', () => {
+  // Its hour has gone by, but the day has not: it is still today's work.
   const morning = task({ isAllDay: false, dueDate: MORNING_ISO })
-  assert.equal(Model.isOverdue(morning, NOW), true)
+  assert.equal(Model.isOverdue(morning, NOW), false)
+})
+
+test('a timed task from yesterday is overdue', () => {
+  const yesterday = task({
+    isAllDay: false,
+    dueDate: new Date(NOW.getTime() - 24 * 3600 * 1000).toISOString().replace('Z', '+0000')
+  })
+  assert.equal(Model.isOverdue(yesterday, NOW), true)
 })
 
 // --- labels --------------------------------------------------------------
@@ -228,11 +247,34 @@ test('a duration task ranks ahead of plain dated tasks', () => {
   assert.deepEqual(due.map(t => t.id), ['meeting', 'float'])
 })
 
-test('late work still outranks a duration task that has not started', () => {
+test('an appointment today outranks late work, which sits under the day', () => {
+  // Tonight's block is something to show up for; a task that went late days
+  // ago is not more urgent for being older, and the header already counts it.
   const overdue = task({ id: 'overdue', dueDate: '2026-08-09T00:00:00.000+0000' })
   const meeting = span(new Date(2026, 7, 12, 21, 0), new Date(2026, 7, 12, 22, 30), { id: 'meeting' })
   const due = Model.dueTasks([meeting, overdue], { now: NOW, horizon: 'Today' })
-  assert.deepEqual(due.map(t => t.id), ['overdue', 'meeting'])
+  assert.deepEqual(due.map(t => t.id), ['meeting', 'overdue'])
+})
+
+test('an hour gone by today does not file the task into the backlog', () => {
+  // 10:30 has passed at 14:00, and the row still belongs above the rule
+  // rather than at the head of a backlog that runs back months.
+  const thisMorning = task({ id: 'morning', isAllDay: false, dueDate: MORNING_ISO })
+  const yesterday = task({ id: 'yesterday', dueDate: '2026-08-11T00:00:00.000+0000' })
+  const due = Model.dueTasks([yesterday, thisMorning], { now: NOW, horizon: 'Today' })
+
+  assert.deepEqual(due.map(t => t.id), ['morning', 'yesterday'])
+  assert.equal(Model.isOverdue(thisMorning, NOW), false)
+  assert.equal(Model.isOverdue(yesterday, NOW), true)
+})
+
+test('the late count is days behind, so an hour gone by adds nothing to it', () => {
+  // The rule and the bar badge read the same number, and that number is what
+  // the rule heads: one task from yesterday, not this morning's slot as well.
+  const thisMorning = task({ id: 'morning', isAllDay: false, dueDate: MORNING_ISO })
+  const yesterday = task({ id: 'yesterday', dueDate: '2026-08-11T00:00:00.000+0000' })
+
+  assert.equal(Model.overdueCount([thisMorning, yesterday], NOW), 1)
 })
 
 // --- task details --------------------------------------------------------
@@ -594,10 +636,10 @@ test('an undated task is not treated as due today', () => {
   assert.equal(Model.dueTier(task({}), NOW), 'upcoming')
 })
 
-test('a timed task earlier today is overdue, not today', () => {
+test('a timed task earlier today is still today, not overdue', () => {
   assert.equal(
     Model.dueTier(task({ isAllDay: false, dueDate: MORNING_ISO }), NOW),
-    'overdue')
+    'today')
 })
 
 test('parseCache defaults tags to an empty list', () => {

@@ -11,7 +11,8 @@ turns urgent when something is late. Left click opens the panel.
 
 ## Features
 
-- Tasks due today, tomorrow, or the next seven days, overdue ones first
+- Tasks due today, tomorrow, or the next seven days — today's work first,
+  late work under its own rule with the count, newest slip first
 - Edit a task in place — `e` fills the add field with the task's own line
 - Completing a task or checking a habit in is a click on its circle — the
   row itself is not a hit target, so a stray click costs nothing
@@ -553,6 +554,12 @@ But a task you just created must never be invisible, so:
 Widening is a look, not a setting. Closing the panel returns it to your
 configured `horizon`, so the default never drifts.
 
+Late is a day, not an hour. A task due at 10:30 is still today's work at
+18:00 — it turns late at midnight, when its day is over. Late work sits
+under its own rule carrying the count, newest slip first: what went late
+yesterday is still the work you meant to do, while something months late
+is a decision to take, not a row to act on.
+
 ## Long titles
 
 A title wider than the row is elided — until you point at it. **The row under
@@ -585,7 +592,9 @@ data — there is no colour field on a task itself.
 Overdue, today, and upcoming have **no colour in the API**. Every TickTick
 client paints that itself, so this one paints it from your Omarchy theme
 rather than hardcoding their palette: overdue takes the accent colour, today
-takes normal foreground, anything further out is muted. A fixed red would
+takes normal foreground, anything further out is muted. Overdue means a day
+behind — a timed task counts as today until midnight, though its row still
+shows the hour. A fixed red would
 fight every theme you switch to.
 
 Priority is the same story — the API gives an integer, not a colour — so a
