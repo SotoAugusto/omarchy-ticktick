@@ -189,6 +189,17 @@ function dueTasks(tasks, options) {
     var bLate = isOverdue(b, now) ? 1 : 0
     if (aLate !== bLate) return aLate - bLate
 
+    // Inside the backlog the newest slip comes first: what went late
+    // yesterday is still the work you meant to do, while something a year
+    // late is a decision to take, not a row to act on this morning.
+    if (aLate === 1) {
+      var aSlip = taskTimeKey(a)
+      var bSlip = taskTimeKey(b)
+      var aSlipTime = aSlip ? aSlip.getTime() : 0
+      var bSlipTime = bSlip ? bSlip.getTime() : 0
+      if (aSlipTime !== bSlipTime) return bSlipTime - aSlipTime
+    }
+
     // A duration is an appointment: it is pinned to a moment you have to
     // show up for, while a plain due time floats anywhere in its day. Among
     // everything that is not late, the pinned moments go first — otherwise

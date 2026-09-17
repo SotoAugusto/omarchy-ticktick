@@ -91,14 +91,14 @@ test("today sorts ahead of the backlog, so a long backlog cannot bury it", () =>
   assert.deepEqual(due.map(t => t.id), ['today', 'late'])
 })
 
-test('the backlog keeps its own order, oldest first', () => {
+test('the backlog runs newest slip first, under the day', () => {
   const tasks = [
     task({ id: 'older', dueDate: '2026-08-04T00:00:00.000+0000' }),
     task({ id: 'today', dueDate: '2026-08-12T00:00:00.000+0000' }),
     task({ id: 'recent', dueDate: '2026-08-09T00:00:00.000+0000' })
   ]
   const due = Model.dueTasks(tasks, { now: NOW, horizon: 'Today' })
-  assert.deepEqual(due.map(t => t.id), ['today', 'older', 'recent'])
+  assert.deepEqual(due.map(t => t.id), ['today', 'recent', 'older'])
 })
 
 test('includeOverdue false hides the backlog', () => {
