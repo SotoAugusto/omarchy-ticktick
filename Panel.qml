@@ -1065,13 +1065,13 @@ Panel {
                 foreground: root.fg
               }
 
+              // The late count belongs to the backlog, which has its own rule
+              // further down. Up here, the total is what the section is.
               PanelSectionHeader {
                 anchors.right: parent.right
                 anchors.baseline: sectionLabel_tasks.baseline
-                text: root.overdueCount > 0
-                  ? root.overdueCount + " LATE"
-                  : String(root.visibleTasks.length)
-                foreground: root.overdueCount > 0 ? Color.accent : root.muted
+                text: String(root.visibleTasks.length)
+                foreground: root.muted
               }
             }
 
@@ -1096,20 +1096,35 @@ Panel {
                 required property int index
                 spacing: 0
 
-                // The first late row, and only when the day sits above it.
-                readonly property bool startsBacklog: index > 0
-                  && modelData.ghost !== true
+                // The first late row -- including when late work opens the
+                // list, because the rule carries the count and the backlog
+                // should be named whether or not the day sits above it.
+                readonly property bool startsBacklog: modelData.ghost !== true
                   && Model.isOverdue(modelData, root.nowDate)
-                  && !Model.isOverdue(root.displayTasks[index - 1], root.nowDate)
+                  && (index === 0
+                    || !Model.isOverdue(root.displayTasks[index - 1], root.nowDate))
 
                 Item {
                   width: content.width
-                  height: taskCell.startsBacklog ? Style.space(14) : 0
+                  height: taskCell.startsBacklog
+                    ? Math.max(Style.space(16), backlogCount.implicitHeight) : 0
                   visible: taskCell.startsBacklog
 
+                  PanelSectionHeader {
+                    id: backlogCount
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: root.overdueCount + " LATE"
+                    foreground: Color.accent
+                  }
+
+                  // The rule stops short of the count rather than running
+                  // under it: one line, reading left to right, ending in
+                  // what it is about.
                   Rectangle {
                     anchors.left: parent.left
-                    anchors.right: parent.right
+                    anchors.right: backlogCount.left
+                    anchors.rightMargin: Style.space(6)
                     anchors.verticalCenter: parent.verticalCenter
                     height: 1
                     color: Qt.rgba(root.muted.r, root.muted.g, root.muted.b, 0.35)
