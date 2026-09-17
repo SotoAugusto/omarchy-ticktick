@@ -532,6 +532,11 @@ def plan_recurring_completion(task: dict, completed_time: str) -> dict | None:
     zone = task_zone(task)
     all_day = bool(task.get("isAllDay"))
 
+    # An exhausted COUNT is the last occurrence even when the rule has no
+    # reachable date left, so check it before the scan rather than refuse.
+    if rule["count"] is not None and rule["count"] <= 1:
+        return None
+
     due_day = calendar_day(task.get("dueDate") or task.get("startDate"), zone, all_day)
     if due_day is None:
         raise UnsupportedRecurrence("it has no due date to advance")
@@ -554,8 +559,6 @@ def plan_recurring_completion(task: dict, completed_time: str) -> dict | None:
     else:
         next_date = next_occurrence_date(rule, dtstart, due_day, excluded)
 
-    if rule["count"] is not None and rule["count"] <= 1:
-        return None
     if rule["until"] and next_date > rule["until"]:
         return None
 

@@ -253,6 +253,20 @@ class RecurringCompletionTests(unittest.TestCase):
 
         self.assertEqual(series["repeatFlag"], "RRULE:FREQ=DAILY;INTERVAL=1;COUNT=2")
 
+    def test_a_spent_series_completes_plainly_without_scanning(self):
+        # COUNT=1 with no reachable date left: the scan would walk eight
+        # years and refuse, but a spent series has nothing to roll, so it
+        # completes plainly before any date is computed.
+        task = self.recurring(
+            repeatFlag="RRULE:FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=30;COUNT=1"
+        )
+        self.use_task(task)
+
+        completed = self.cli["set_task_status"](task["id"], self.cli["STATUS_DONE"])
+
+        self.assertEqual(completed["status"], self.cli["STATUS_DONE"])
+        self.assertEqual(self.dispatched[0]["add"], [])
+
     def test_a_rule_past_its_until_completes_plainly(self):
         task = self.recurring(repeatFlag="RRULE:FREQ=DAILY;INTERVAL=1;UNTIL=20260902T235959Z")
         self.use_task(task)
