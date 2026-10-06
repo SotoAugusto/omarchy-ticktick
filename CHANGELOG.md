@@ -9,6 +9,11 @@
 - The panel opens on today: late work no longer fills the list before
   today's tasks are reached. It sits under its own rule carrying the late
   count, newest slip first.
+- All-day tasks no longer show a day early east of UTC. TickTick stores
+  them as local midnight in UTC, so "tomorrow" in Amsterdam arrived dated
+  today and sat in the Today view.
+- A recurring all-day task stays on its day when the series rolls across a
+  daylight-saving change, instead of landing an hour short on the day before.
 - Late is a day behind, not an hour past. A timed task due at 10:30 counts
   as today until midnight; its hour still shows in the row's due label.
 

@@ -444,11 +444,13 @@ def _shifted_dates(task: dict, zone, delta: timedelta) -> dict:
         stamp = parse_api_time(task.get(key))
         if stamp is None:
             continue
-        if task.get("isAllDay"):
-            # All-day stamps are a literal midnight marker, not an instant.
+        local = stamp.astimezone(zone)
+        if task.get("isAllDay") and (local.hour, local.minute) != (0, 0):
+            # A literal UTC midnight marker, not an instant. TickTick's own
+            # apps write local midnight instead, which falls through to the
+            # wall-clock shift so it stays on midnight across a DST change.
             moved[key] = to_api_time(stamp + delta)
         else:
-            local = stamp.astimezone(zone)
             moved[key] = to_api_time((local.replace(tzinfo=None) + delta).replace(tzinfo=zone))
     return moved
 
