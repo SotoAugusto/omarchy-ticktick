@@ -1,0 +1,43 @@
+{
+  "syncedAt": 1791374400000,
+  "inboxId": "inbox-1",
+  "projects": [],
+  "tasks": [
+    {
+      "id": "amsterdam",
+      "projectId": "inbox-1",
+      "title": "Amsterdam-native all-day",
+      "status": 0,
+      "isAllDay": true,
+      "timeZone": "Europe/Amsterdam",
+      "startDate": "2026-10-06T22:00:00.000+0000",
+      "dueDate": "2026-10-06T22:00:00.000+0000"
+    },
+    {
+      "id": "legacy",
+      "projectId": "inbox-1",
+      "title": "Legacy plugin marker",
+      "status": 0,
+      "isAllDay": true,
+      "timeZone": "America/New_York",
+      "startDate": "2026-10-08T00:00:00.000+0000",
+      "dueDate": "2026-10-08T00:00:00.000+0000"
+    },
+    {
+      "id": "timed",
+      "projectId": "inbox-1",
+      "title": "Timed",
+      "status": 0,
+      "isAllDay": false,
+      "timeZone": "Europe/Amsterdam",
+      "startDate": "2026-10-07T20:30:00.000+0000",
+      "dueDate": "2026-10-07T20:30:00.000+0000"
+    }
+  ],
+  "habits": [],
+  "checkins": {},
+  "allDayDates": {
+    "amsterdam": "2026-10-07",
+    "legacy": "2026-10-08"
+  }
+}

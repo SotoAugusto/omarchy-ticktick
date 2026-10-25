@@ -702,6 +702,26 @@ class CachePublisherTests(unittest.TestCase):
         self.assert_no_derived_keys(sent)
 
 
+class CacheContractTests(unittest.TestCase):
+    """The cache the panel reads, pinned in a fixture tests/model.test.js reads too."""
+
+    FIXTURE = Path(__file__).resolve().parent / "fixtures" / "all-day-cache.json"
+
+    def setUp(self):
+        state_home = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(mock.patch.dict(os.environ, {"XDG_STATE_HOME": state_home}))
+        self.cli = load_cli()
+
+    def test_the_cli_writes_the_fixtures_all_day_dates(self):
+        golden = json.loads(self.FIXTURE.read_text(encoding="utf-8"))
+        raw = {key: value for key, value in golden.items() if key != "allDayDates"}
+
+        self.cli["save_cache"](raw)
+
+        with open(self.cli["DATA_PATH"], encoding="utf-8") as handle:
+            self.assertEqual(json.load(handle)["allDayDates"], golden["allDayDates"])
+
+
 class DueWriterTests(unittest.TestCase):
     def setUp(self):
         state_home = self.enterContext(tempfile.TemporaryDirectory())

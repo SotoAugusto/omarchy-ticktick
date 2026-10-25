@@ -1,5 +1,7 @@
 const test = require('node:test')
 const assert = require('node:assert')
+const fs = require('node:fs')
+const path = require('node:path')
 const Model = require('../Model.js')
 
 const NOW = new Date(2026, 7, 12, 14, 0, 0) // 2026-08-12 14:00 local
@@ -1707,4 +1709,21 @@ test('a task the projection does not list keeps reading its stamp', () => {
   )
   assert.equal(Model.dateStamp(Model.taskDueDate(allDay)), 20261007)
   assert.equal(Model.taskDueDate(timed).getTime(), new Date(2026, 9, 7, 9, 30).getTime())
+})
+
+test('the cache fixture the CLI writes reads back as each task\'s own day', () => {
+  const cache = Model.parseCache(fs.readFileSync(path.join(__dirname, 'fixtures', 'all-day-cache.json'), 'utf8'))
+  const byId = Object.fromEntries(cache.tasks.map(t => [t.id, t]))
+  const noon = new Date(2026, 9, 7, 12, 0)
+
+  assert.equal(Model.dateStamp(Model.taskDueDate(byId.amsterdam)), 20261007)
+  assert.equal(Model.dueLabel(byId.amsterdam, noon), 'Today')
+  assert.equal(Model.dateStamp(Model.taskDueDate(byId.legacy)), 20261008)
+  assert.equal(Model.dueLabel(byId.legacy, noon), 'Tomorrow')
+
+  // A timed task is an instant, so its clock is whatever this zone reads.
+  const at = new Date(Date.UTC(2026, 9, 7, 20, 30))
+  const clock = String(at.getHours()).padStart(2, '0') + ':' + String(at.getMinutes()).padStart(2, '0')
+  assert.equal(Model.taskDueDate(byId.timed).getTime(), at.getTime())
+  assert.equal(Model.dueLabel(byId.timed, at), clock)
 })
