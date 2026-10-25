@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Regression tests for state-changing CLI operations."""
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, available_timezones
 import argparse
 import contextlib
 import inspect
@@ -15,7 +15,6 @@ import runpy
 import tempfile
 import time
 import unittest
-import zoneinfo
 
 
 CLI_PATH = Path(__file__).resolve().parents[1] / "bin" / "omarchy-ticktick"
@@ -424,7 +423,7 @@ class CalendarDayTests(unittest.TestCase):
     def test_every_zone_reads_back_the_day_it_wrote_and_the_legacy_marker(self):
         days = (date(2026, 1, 15), date(2026, 7, 15), date(2026, 3, 29), date(2026, 9, 6), date(2026, 11, 1))
         failures = []
-        for name in sorted(zoneinfo.available_timezones()):
+        for name in sorted(available_timezones()):
             zone = ZoneInfo(name)
             for day in days:
                 stamp = self.cli["all_day_stamp"](day, zone)
@@ -473,6 +472,40 @@ class CalendarDayTests(unittest.TestCase):
         self.assertIsNone(self.cli["calendar_day"]("soon", ZoneInfo("UTC"), True))
 
 
+@contextlib.contextmanager
+def machine_files(timezone_file=None, localtime_link=None):
+    """/etc/timezone and the /etc/localtime symlink as the CLI sees them."""
+    real_open, real_islink, real_readlink = open, os.path.islink, os.readlink
+
+    def fake_open(path, *args, **kwargs):
+        if path != "/etc/timezone":
+            return real_open(path, *args, **kwargs)
+        if timezone_file is None:
+            raise FileNotFoundError(path)
+        return io.StringIO(timezone_file + "\n")
+
+    def fake_islink(path):
+        return localtime_link is not None if path == "/etc/localtime" else real_islink(path)
+
+    def fake_readlink(path, *args, **kwargs):
+        return localtime_link if path == "/etc/localtime" else real_readlink(path, *args, **kwargs)
+
+    with mock.patch("builtins.open", fake_open), mock.patch("os.path.islink", fake_islink), \
+            mock.patch("os.readlink", fake_readlink):
+        yield
+
+
+@contextlib.contextmanager
+def libc_tz(tz):
+    """TZ as libc sees it too: date.today() only rereads TZ after tzset()."""
+    try:
+        with mock.patch.dict(os.environ, {"TZ": tz}):
+            time.tzset()
+            yield
+    finally:
+        time.tzset()
+
+
 class ZoneTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -495,6 +528,27 @@ class ZoneTests(unittest.TestCase):
             os.environ.pop("TZ", None)
             unset = self.cli["zone_name"](self.cli["machine_zone"]())
         self.assertEqual(self.machine_zone_under("UTC+3"), unset)
+
+    def test_the_machine_zone_is_found_where_libc_looks(self):
+        files = {"timezone_file": "Asia/Tokyo", "localtime_link": "../usr/share/zoneinfo/Europe/Paris"}
+        cases = [
+            ({"TZ": "America/New_York"}, files, "America/New_York"),
+            ({}, files, "Europe/Paris"),
+            ({}, {"timezone_file": "Asia/Tokyo"}, "Asia/Tokyo"),
+            ({}, {}, "UTC"),
+        ]
+        for env, etc, expected in cases:
+            with self.subTest(env=env, etc=etc), mock.patch.dict(os.environ, env), machine_files(**etc):
+                if not env:
+                    os.environ.pop("TZ", None)
+                self.assertEqual(self.cli["zone_name"](self.cli["machine_zone"]()), expected)
+
+    def test_a_posix_or_right_zone_path_names_the_plain_zone(self):
+        self.assertEqual(self.machine_zone_under("posix/Asia/Tokyo"), "Asia/Tokyo")
+        self.assertEqual(self.machine_zone_under(":/usr/share/zoneinfo/right/UTC"), "UTC")
+        with mock.patch.dict(os.environ), machine_files(localtime_link="/usr/share/zoneinfo/posix/Europe/Paris"):
+            os.environ.pop("TZ", None)
+            self.assertEqual(self.cli["zone_name"](self.cli["machine_zone"]()), "Europe/Paris")
 
     def test_a_task_keeps_its_own_zone(self):
         with mock.patch.dict(os.environ, {"TZ": "Asia/Tokyo"}):
@@ -670,11 +724,25 @@ class DueWriterTests(unittest.TestCase):
             self.cli["due_fields"]("2011-12-30", None, ZoneInfo("Pacific/Apia"))
 
     def test_today_is_the_machines_today(self):
-        with mock.patch.dict(os.environ, {"TZ": "Pacific/Kiritimati"}):
+        with libc_tz("Pacific/Kiritimati"):
             fields = self.cli["due_fields"]("today", None, ZoneInfo("UTC"))
 
         today = datetime.now(ZoneInfo("Pacific/Kiritimati")).date()
         self.assertEqual(fields["dueDate"], f"{today.isoformat()}T00:00:00.000+0000")
+
+    def test_today_is_libcs_today_whatever_the_etc_files_say(self):
+        # libc reads "XYZ-14" as UTC+14; zoneinfo cannot load it. The files
+        # name UTC-12, 26 hours away, so the two never share a date.
+        with libc_tz("XYZ-14"), machine_files("Etc/GMT+12", "../usr/share/zoneinfo/Etc/GMT+12"):
+            today = self.cli["parse_due_date"]("today")
+            self.assertEqual(today, date.today())
+        self.assertEqual(today, datetime.now(timezone(timedelta(hours=14))).date())
+
+    def test_a_new_task_records_a_posix_zone_by_its_plain_name(self):
+        with mock.patch.dict(os.environ, {"TZ": "posix/Asia/Tokyo"}):
+            task = self.cli["create_task"]("Pay rent", None, "2026-10-08")
+
+        self.assertEqual(task["timeZone"], "Asia/Tokyo")
 
     def test_a_clock_time_stays_in_the_machines_zone(self):
         fields = self.cli["due_fields"]("2026-10-07", "21:00", ZoneInfo("Pacific/Kiritimati"))

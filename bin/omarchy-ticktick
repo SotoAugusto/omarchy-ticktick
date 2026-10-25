@@ -897,37 +897,44 @@ def _load_zone(name) -> tzinfo | None:
         return None
 
 
-def machine_zone() -> tzinfo:
-    """This machine's zone: TZ, then /etc/timezone, then /etc/localtime, then UTC.
+def _system_zone(path: str) -> tzinfo | None:
+    """The zone a TZ value or zoneinfo path names, by its plain key.
 
-    TZ wins because libc already honours it, and disagreeing with `date`
-    would give the machine two different todays. A value zoneinfo cannot
-    load ("UTC+3") falls through.
+    posix/ and right/ are copies of the same zones; recording "posix/Asia/Tokyo"
+    as a task's timeZone would hand TickTick a name it does not know.
+    """
+    key = path.split("zoneinfo/", 1)[-1]
+    head, _, rest = key.partition("/")
+    return _load_zone(rest if head in ("posix", "right") else key)
+
+
+def machine_zone() -> tzinfo:
+    """This machine's zone: TZ, then /etc/localtime, then /etc/timezone, then UTC.
+
+    That is the order libc and Qt use, so the zone agrees with `date` and the
+    panel; /etc/timezone is a Debian leftover neither reads. A value zoneinfo
+    cannot load ("UTC+3") falls through.
     """
     env = os.environ.get("TZ")
     if env is not None:
         name = env.lstrip(":")
         if not name:
             return timezone.utc
-        if "/zoneinfo/" in name:
-            name = name.split("/zoneinfo/", 1)[1]
-        zone = _load_zone(name)
+        zone = _system_zone(name)
+        if zone is not None:
+            return zone
+    link = "/etc/localtime"
+    if os.path.islink(link):
+        zone = _system_zone(os.readlink(link))
         if zone is not None:
             return zone
     try:
         with open("/etc/timezone", encoding="utf-8") as handle:
-            zone = _load_zone(handle.read().strip())
+            zone = _system_zone(handle.read().strip())
             if zone is not None:
                 return zone
     except OSError:
         pass
-    link = "/etc/localtime"
-    if os.path.islink(link):
-        target = os.readlink(link)
-        if "zoneinfo/" in target:
-            zone = _load_zone(target.split("zoneinfo/", 1)[1])
-            if zone is not None:
-                return zone
     return timezone.utc
 
 
@@ -1504,8 +1511,9 @@ def apply_edit(task: dict, fields: dict) -> dict:
     if "tags" in fields:
         edited["tags"] = [str(t).strip().lower() for t in (fields["tags"] or []) if str(t).strip()]
     if "due" in fields:
-        zone = task_zone(task)
-        if _load_zone(task.get("timeZone")) is None:
+        own = _load_zone(task.get("timeZone")) if task.get("timeZone") else None
+        zone = own or machine_zone()
+        if own is None:
             edited["timeZone"] = zone_name(zone)
         edited.update(due_fields(fields["due"], fields.get("time"), zone))
     edited["modifiedTime"] = now_api_time()
@@ -1642,7 +1650,7 @@ def create_task(
 
 def parse_due_date(value: str) -> date:
     text = value.strip().lower()
-    today = datetime.now(machine_zone()).date()
+    today = date.today()
     if text == "today":
         return today
     if text == "tomorrow":
