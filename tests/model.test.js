@@ -1671,15 +1671,43 @@ test('the line an edit pre-fills previews as the task it came from', () => {
   assert.equal(Model.quickAddPreview(Model.parseQuickAdd(line), true), 'Today · 21:00–22:30')
 })
 
+function cachedTasks(tasks, allDayDates) {
+  return Model.parseCache(JSON.stringify({ tasks: tasks, allDayDates: allDayDates })).tasks
+}
+
 test('all-day tasks stored as local midnight in UTC keep their calendar date', () => {
   // TickTick apps store an all-day date as local midnight converted to UTC,
-  // which east of UTC lands on the previous UTC day.
+  // which east of UTC lands on the previous UTC day. The CLI has already
+  // read it back as the 7th.
   const localMidnight = new Date(2026, 9, 7)
-  const due = Model.taskDueDate(task({ isAllDay: true, dueDate: iso(localMidnight) }))
-  assert.equal(Model.dateStamp(due), 20261007)
+  const [stored] = cachedTasks([task({ isAllDay: true, dueDate: iso(localMidnight) })], { x: '2026-10-07' })
+  assert.equal(Model.dateStamp(Model.taskDueDate(stored)), 20261007)
 })
 
 test('all-day tasks stored as literal UTC midnight keep their calendar date', () => {
   const due = Model.taskDueDate(task({ isAllDay: true, dueDate: '2026-10-07T00:00:00.000+0000' }))
   assert.equal(Model.dateStamp(due), 20261007)
+})
+
+test('an all-day task shows the day its own zone gave it, wherever it is viewed', () => {
+  // Midnight Amsterdam on the 7th is the evening of the 6th in New York and
+  // the morning of the 7th in Tokyo; it is due the 7th in both.
+  const [stored] = cachedTasks(
+    [task({ id: 'a1', isAllDay: true, timeZone: 'Europe/Amsterdam', dueDate: '2026-10-06T22:00:00.000+0000' })],
+    { a1: '2026-10-07' }
+  )
+  assert.equal(Model.dateStamp(Model.taskDueDate(stored)), 20261007)
+  assert.equal(Model.dueLabel(stored, new Date(2026, 9, 7, 12, 0)), 'Today')
+})
+
+test('a task the projection does not list keeps reading its stamp', () => {
+  const [allDay, timed] = cachedTasks(
+    [
+      task({ id: 'a1', dueDate: '2026-10-07T00:00:00.000+0000' }),
+      task({ id: 't1', isAllDay: false, dueDate: iso(new Date(2026, 9, 7, 9, 30)) })
+    ],
+    { other: '2026-10-09' }
+  )
+  assert.equal(Model.dateStamp(Model.taskDueDate(allDay)), 20261007)
+  assert.equal(Model.taskDueDate(timed).getTime(), new Date(2026, 9, 7, 9, 30).getTime())
 })
