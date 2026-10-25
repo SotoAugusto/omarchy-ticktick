@@ -3,8 +3,12 @@
 
 from datetime import date
 from pathlib import Path
+from unittest import mock
+from zoneinfo import ZoneInfo
+import os
 import runpy
 import unittest
+import zoneinfo
 
 
 CLI_PATH = Path(__file__).resolve().parents[1] / "bin" / "omarchy-ticktick"
@@ -352,6 +356,106 @@ class RecurrenceTimezoneTests(unittest.TestCase):
         plan = self.cli["plan_recurring_completion"](task, "2026-10-30T14:00:00.000+0000")
 
         self.assertEqual(plan["series"]["dueDate"], "2026-10-31T00:00:00.000+0000")
+
+
+class CalendarDayTests(unittest.TestCase):
+    """An all-day stamp names one calendar day, read in the task's own zone."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.cli = load_cli()
+
+    def all_day(self, raw, zone_name):
+        return self.cli["calendar_day"](raw, ZoneInfo(zone_name), True)
+
+    def test_every_zone_reads_back_the_day_it_wrote_and_the_legacy_marker(self):
+        days = (date(2026, 1, 15), date(2026, 7, 15), date(2026, 3, 29), date(2026, 9, 6), date(2026, 11, 1))
+        failures = []
+        for name in sorted(zoneinfo.available_timezones()):
+            zone = ZoneInfo(name)
+            for day in days:
+                stamp = self.cli["all_day_stamp"](day, zone)
+                if self.cli["parse_api_time"](stamp).astimezone(zone).date() != day:
+                    failures.append(("encoded off its day", name, day))
+                if self.cli["calendar_day"](stamp, zone, True) != day:
+                    failures.append(("native", name, day))
+                marker = f"{day.isoformat()}T00:00:00.000+0000"
+                if self.cli["calendar_day"](marker, zone, True) != day:
+                    failures.append(("legacy marker", name, day))
+        self.assertEqual(failures, [])
+
+    def test_tickticks_encoding_is_local_midnight(self):
+        self.assertEqual(
+            self.cli["all_day_stamp"](date(2026, 10, 7), ZoneInfo("Europe/Amsterdam")),
+            "2026-10-06T22:00:00.000+0000",
+        )
+        self.assertEqual(self.all_day("2026-10-06T22:00:00.000+0000", "Europe/Amsterdam"), date(2026, 10, 7))
+
+    def test_a_day_without_a_midnight_starts_at_the_transition(self):
+        # Santiago springs forward at midnight on 6 September 2026: 00:00
+        # never happens, and the day begins at 01:00 -03.
+        stamp = self.cli["all_day_stamp"](date(2026, 9, 6), ZoneInfo("America/Santiago"))
+        self.assertEqual(stamp, "2026-09-06T04:00:00.000+0000")
+        self.assertEqual(self.all_day(stamp, "America/Santiago"), date(2026, 9, 6))
+
+    def test_a_day_the_zone_skipped_has_no_stamp(self):
+        # Samoa jumped the date line and went from 29 to 31 December 2011.
+        with self.assertRaises(ValueError):
+            self.cli["all_day_stamp"](date(2011, 12, 30), ZoneInfo("Pacific/Apia"))
+
+    def test_a_stamp_from_another_zone_rounds_to_the_nearest_midnight(self):
+        # Amsterdam midnight is 18:00 the evening before in New York.
+        self.assertEqual(self.all_day("2026-10-06T22:00:00.000+0000", "America/New_York"), date(2026, 10, 7))
+
+    def test_far_east_of_utc_the_legacy_marker_still_reads_its_own_day(self):
+        # UTC midnight is 14:00 in Kiritimati, which nearest-midnight alone
+        # would read as the next day.
+        self.assertEqual(self.all_day("2026-10-30T00:00:00.000+0000", "Pacific/Kiritimati"), date(2026, 10, 30))
+
+    def test_a_timed_stamp_is_its_local_date(self):
+        self.assertEqual(
+            self.cli["calendar_day"]("2026-10-07T23:30:00.000+0000", ZoneInfo("Europe/Amsterdam"), False),
+            date(2026, 10, 8),
+        )
+
+    def test_nothing_to_read_is_no_day(self):
+        self.assertIsNone(self.cli["calendar_day"](None, ZoneInfo("UTC"), True))
+        self.assertIsNone(self.cli["calendar_day"]("soon", ZoneInfo("UTC"), True))
+
+
+class ZoneTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.cli = load_cli()
+
+    def machine_zone_under(self, tz):
+        with mock.patch.dict(os.environ, {"TZ": tz}):
+            return self.cli["zone_name"](self.cli["machine_zone"]())
+
+    def test_tz_names_the_machine_zone(self):
+        self.assertEqual(self.machine_zone_under("Asia/Tokyo"), "Asia/Tokyo")
+        self.assertEqual(self.machine_zone_under(":Asia/Tokyo"), "Asia/Tokyo")
+        self.assertEqual(self.machine_zone_under("/usr/share/zoneinfo/Asia/Tokyo"), "Asia/Tokyo")
+
+    def test_an_empty_tz_is_utc(self):
+        self.assertEqual(self.machine_zone_under(""), "UTC")
+
+    def test_a_tz_zoneinfo_cannot_load_is_ignored(self):
+        with mock.patch.dict(os.environ):
+            os.environ.pop("TZ", None)
+            unset = self.cli["zone_name"](self.cli["machine_zone"]())
+        self.assertEqual(self.machine_zone_under("UTC+3"), unset)
+
+    def test_a_task_keeps_its_own_zone(self):
+        with mock.patch.dict(os.environ, {"TZ": "Asia/Tokyo"}):
+            zone = self.cli["task_zone"]({"timeZone": "Europe/Amsterdam"})
+        self.assertEqual(self.cli["zone_name"](zone), "Europe/Amsterdam")
+
+    def test_a_task_without_a_usable_zone_takes_the_machines(self):
+        with mock.patch.dict(os.environ, {"TZ": "Asia/Tokyo"}):
+            for task in ({}, {"timeZone": ""}, {"timeZone": "Mars/Olympus"}):
+                with self.subTest(task=task):
+                    self.assertEqual(self.cli["zone_name"](self.cli["task_zone"](task)), "Asia/Tokyo")
 
 
 class MaterialisedOccurrenceTests(unittest.TestCase):

@@ -38,7 +38,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zoneinfo
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone, tzinfo
 
 DOMAIN = os.environ.get("TICKTICK_DOMAIN", "ticktick.com")
 API = f"https://api.{DOMAIN}/api/v2"
@@ -898,6 +898,109 @@ def parse_api_time(value: str | None) -> datetime | None:
         return datetime.fromisoformat(text)
     except ValueError:
         return None
+
+
+# --------------------------------------------------------------------------
+# calendar days
+#
+# An all-day task is a calendar date that TickTick carries as an instant.
+# Its own apps write midnight in the task's `timeZone`, so in Amsterdam
+# "Oct 7" arrives as 2026-10-06T22:00:00+0000; this plugin used to write a
+# literal T00:00:00+0000 instead. Only the task's zone tells the two apart,
+# and the panel cannot do zone math, so the date is read here and nowhere
+# else.
+
+
+def _load_zone(name) -> tzinfo | None:
+    try:
+        return zoneinfo.ZoneInfo(str(name))
+    except Exception:  # noqa: BLE001 - an unknown zone falls back, it is not an error
+        return None
+
+
+def machine_zone() -> tzinfo:
+    """This machine's zone: TZ, then /etc/timezone, then /etc/localtime, then UTC.
+
+    TZ wins because libc already honours it, and disagreeing with `date`
+    would give the machine two different todays. A value zoneinfo cannot
+    load ("UTC+3") falls through. Without a tz database the answer is plain
+    UTC, so a completion still works there.
+    """
+    env = os.environ.get("TZ")
+    if env is not None:
+        name = env.lstrip(":")
+        if not name:
+            return timezone.utc
+        if "/zoneinfo/" in name:
+            name = name.split("/zoneinfo/", 1)[1]
+        zone = _load_zone(name)
+        if zone is not None:
+            return zone
+    try:
+        with open("/etc/timezone", encoding="utf-8") as handle:
+            zone = _load_zone(handle.read().strip())
+            if zone is not None:
+                return zone
+    except OSError:
+        pass
+    link = "/etc/localtime"
+    if os.path.islink(link):
+        target = os.readlink(link)
+        if "zoneinfo/" in target:
+            zone = _load_zone(target.split("zoneinfo/", 1)[1])
+            if zone is not None:
+                return zone
+    return timezone.utc
+
+
+def zone_name(zone: tzinfo) -> str:
+    """The IANA name to record on a task."""
+    return getattr(zone, "key", "UTC")
+
+
+def task_zone(task: dict) -> tzinfo:
+    """The zone a task's dates are written in: its own, else this machine's."""
+    name = task.get("timeZone")
+    return (_load_zone(name) if name else None) or machine_zone()
+
+
+def read_all_day(stamp: datetime, zone: tzinfo) -> date:
+    """The calendar date an all-day stamp names, read in the task's zone.
+
+    Local midnight is TickTick's encoding. UTC midnight is this plugin's
+    legacy marker; the two never coincide except at offset zero, where they
+    agree. Anything else is the nearest local midnight: a day whose midnight
+    does not exist starts after 00:00, and a stamp written under another
+    zone lands within twelve hours of the right one.
+    """
+    local = stamp.astimezone(zone)
+    if (local.hour, local.minute) == (0, 0):
+        return local.date()
+    utc = stamp.astimezone(timezone.utc)
+    if (utc.hour, utc.minute) == (0, 0):
+        return utc.date()
+    return local.date() + timedelta(days=1 if local.hour >= 12 else 0)
+
+
+def all_day_stamp(day: date, zone: tzinfo) -> str:
+    """TickTick's encoding of an all-day date: its first instant in `zone`, as UTC.
+
+    A midnight that falls in a DST gap resolves to the transition itself,
+    which is the first instant of that day. A day the zone skipped outright
+    has no instant at all, so it raises rather than naming the next one.
+    """
+    first = datetime(day.year, day.month, day.day, tzinfo=zone).astimezone(timezone.utc)
+    if first.astimezone(zone).date() != day:
+        raise ValueError(f"{day.isoformat()} does not exist in {zone_name(zone)}")
+    return to_api_time(first)
+
+
+def calendar_day(raw: str | None, zone: tzinfo, all_day: bool) -> date | None:
+    """The day a task stamp falls on: the all-day reading, or the local date of an instant."""
+    stamp = parse_api_time(raw)
+    if stamp is None:
+        return None
+    return read_all_day(stamp, zone) if all_day else stamp.astimezone(zone).date()
 
 
 # --------------------------------------------------------------------------
