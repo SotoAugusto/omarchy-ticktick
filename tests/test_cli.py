@@ -370,8 +370,6 @@ class RecurrenceTimezoneTests(unittest.TestCase):
         self.assertEqual(plan["series"]["startDate"], "2026-10-31T04:00:00.000+0000")
 
     def test_a_legacy_marker_west_of_utc_keeps_its_weekday(self):
-        # The marker names Friday 30 October. Read as an instant in New York
-        # it is Thursday evening, which rolled a Fridays-only task to Saturday.
         plan = self.cli["plan_recurring_completion"](
             self.legacy_all_day(repeatFlag="RRULE:FREQ=WEEKLY;BYDAY=FR"),
             "2026-10-30T14:00:00.000+0000",
@@ -389,7 +387,6 @@ class RecurrenceTimezoneTests(unittest.TestCase):
             "2026-10-30T14:00:00.000+0000",
         )
 
-        # Every other day from the 28th: the 1st is skipped, so the 3rd.
         self.assertEqual(plan["series"]["dueDate"], "2026-11-03T05:00:00.000+0000")
 
     def test_a_series_rolling_onto_a_day_the_zone_skipped_is_refused(self):
@@ -417,8 +414,6 @@ class RecurrenceTimezoneTests(unittest.TestCase):
 
 
 class CalendarDayTests(unittest.TestCase):
-    """An all-day stamp names one calendar day, read in the task's own zone."""
-
     @classmethod
     def setUpClass(cls):
         cls.cli = load_cli()
@@ -462,12 +457,9 @@ class CalendarDayTests(unittest.TestCase):
             self.cli["all_day_stamp"](date(2011, 12, 30), ZoneInfo("Pacific/Apia"))
 
     def test_a_stamp_from_another_zone_rounds_to_the_nearest_midnight(self):
-        # Amsterdam midnight is 18:00 the evening before in New York.
         self.assertEqual(self.all_day("2026-10-06T22:00:00.000+0000", "America/New_York"), date(2026, 10, 7))
 
     def test_far_east_of_utc_the_legacy_marker_still_reads_its_own_day(self):
-        # UTC midnight is 14:00 in Kiritimati, which nearest-midnight alone
-        # would read as the next day.
         self.assertEqual(self.all_day("2026-10-30T00:00:00.000+0000", "Pacific/Kiritimati"), date(2026, 10, 30))
 
     def test_a_timed_stamp_is_its_local_date(self):
@@ -547,8 +539,6 @@ DERIVED_KEYS = {"allDayDates", "calendarDate"}
 
 
 class CachePublisherTests(unittest.TestCase):
-    """Every write of the cache carries allDayDates, and nothing derived reaches TickTick."""
-
     def setUp(self):
         state_home = self.enterContext(tempfile.TemporaryDirectory())
         self.enterContext(mock.patch.dict(os.environ, {"XDG_STATE_HOME": state_home, "TZ": "America/New_York"}))
@@ -659,8 +649,6 @@ class CachePublisherTests(unittest.TestCase):
 
 
 class DueWriterTests(unittest.TestCase):
-    """New and edited dates are written the way TickTick's own apps write them."""
-
     def setUp(self):
         state_home = self.enterContext(tempfile.TemporaryDirectory())
         self.enterContext(mock.patch.dict(os.environ, {"XDG_STATE_HOME": state_home, "TZ": "America/New_York"}))

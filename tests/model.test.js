@@ -1677,10 +1677,9 @@ function cachedTasks(tasks, allDayDates) {
 
 test('all-day tasks stored as local midnight in UTC keep their calendar date', () => {
   // TickTick apps store an all-day date as local midnight converted to UTC,
-  // which east of UTC lands on the previous UTC day. The CLI has already
-  // read it back as the 7th.
+  // which east of UTC lands on the previous UTC day.
   const localMidnight = new Date(2026, 9, 7)
-  const [stored] = cachedTasks([task({ isAllDay: true, dueDate: iso(localMidnight) })], { x: '2026-10-07' })
+  const [stored] = cachedTasks([task({ id: 'a1', isAllDay: true, dueDate: iso(localMidnight) })], { a1: '2026-10-07' })
   assert.equal(Model.dateStamp(Model.taskDueDate(stored)), 20261007)
 })
 
@@ -1690,8 +1689,6 @@ test('all-day tasks stored as literal UTC midnight keep their calendar date', ()
 })
 
 test('an all-day task shows the day its own zone gave it, wherever it is viewed', () => {
-  // Midnight Amsterdam on the 7th is the evening of the 6th in New York and
-  // the morning of the 7th in Tokyo; it is due the 7th in both.
   const [stored] = cachedTasks(
     [task({ id: 'a1', isAllDay: true, timeZone: 'Europe/Amsterdam', dueDate: '2026-10-06T22:00:00.000+0000' })],
     { a1: '2026-10-07' }

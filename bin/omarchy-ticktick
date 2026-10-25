@@ -416,10 +416,6 @@ def _advance_from_completion(rule: dict, dtstart, finished, excluded=()):
 def _shifted_dates(task: dict, zone, delta: timedelta) -> dict:
     """Move start and due by whole days, preserving duration and wall time.
 
-    Whole-day arithmetic happens in the task's zone, or a timed task drifts
-    an hour across a DST boundary. An all-day date is moved as a calendar
-    day and written back in TickTick's encoding, whichever shape it came in.
-
     Also used for a checklist item, which carries a `startDate` of its own
     but takes its all-day flag from the task it belongs to.
     """
@@ -897,7 +893,7 @@ def parse_api_time(value: str | None) -> datetime | None:
 def _load_zone(name) -> tzinfo | None:
     try:
         return zoneinfo.ZoneInfo(str(name))
-    except Exception:  # noqa: BLE001 - an unknown zone falls back, it is not an error
+    except (zoneinfo.ZoneInfoNotFoundError, ValueError, OSError):
         return None
 
 
@@ -906,8 +902,7 @@ def machine_zone() -> tzinfo:
 
     TZ wins because libc already honours it, and disagreeing with `date`
     would give the machine two different todays. A value zoneinfo cannot
-    load ("UTC+3") falls through. Without a tz database the answer is plain
-    UTC, so a completion still works there.
+    load ("UTC+3") falls through.
     """
     env = os.environ.get("TZ")
     if env is not None:
@@ -937,12 +932,10 @@ def machine_zone() -> tzinfo:
 
 
 def zone_name(zone: tzinfo) -> str:
-    """The IANA name to record on a task."""
     return getattr(zone, "key", "UTC")
 
 
 def task_zone(task: dict) -> tzinfo:
-    """The zone a task's dates are written in: its own, else this machine's."""
     name = task.get("timeZone")
     return (_load_zone(name) if name else None) or machine_zone()
 
@@ -979,7 +972,6 @@ def all_day_stamp(day: date, zone: tzinfo) -> str:
 
 
 def calendar_day(raw: str | None, zone: tzinfo, all_day: bool) -> date | None:
-    """The day a task stamp falls on: the all-day reading, or the local date of an instant."""
     stamp = parse_api_time(raw)
     if stamp is None:
         return None
@@ -987,7 +979,6 @@ def calendar_day(raw: str | None, zone: tzinfo, all_day: bool) -> date | None:
 
 
 def all_day_dates(tasks: list) -> dict:
-    """{task id: "YYYY-MM-DD"} for every all-day task whose due date reads."""
     dates = {}
     for task in tasks:
         if not isinstance(task, dict) or not task.get("isAllDay") or not task.get("id"):
@@ -1336,12 +1327,6 @@ def fetch_state(session: dict, scope: str = "full") -> dict:
 
 
 def save_cache(cache: dict) -> None:
-    """Publish the cache the panel reads. Nothing else writes DATA_PATH.
-
-    `allDayDates` is derived from the tasks on every write, so it can never
-    describe tasks other than the ones beside it. It sits beside them rather
-    than on them because task objects go back to TickTick verbatim.
-    """
     cache["allDayDates"] = all_day_dates(cache.get("tasks") or [])
     _write_private(DATA_PATH, cache)
 
@@ -1520,9 +1505,7 @@ def apply_edit(task: dict, fields: dict) -> dict:
         edited["tags"] = [str(t).strip().lower() for t in (fields["tags"] or []) if str(t).strip()]
     if "due" in fields:
         zone = task_zone(task)
-        if not task.get("timeZone"):
-            # The new date is written in this zone, so the task has to say so
-            # or the next reader on another machine reads it in its own.
+        if _load_zone(task.get("timeZone")) is None:
             edited["timeZone"] = zone_name(zone)
         edited.update(due_fields(fields["due"], fields.get("time"), zone))
     edited["modifiedTime"] = now_api_time()
@@ -1658,7 +1641,6 @@ def create_task(
 
 
 def parse_due_date(value: str) -> date:
-    """A due word as a calendar date. "today" is today on this machine."""
     text = value.strip().lower()
     today = datetime.now(machine_zone()).date()
     if text == "today":
@@ -1700,19 +1682,19 @@ def parse_time_argument(value: str) -> tuple[int, int | None]:
     return start, end
 
 
-def due_fields(due: str, time_value: str | None, zone: tzinfo) -> dict:
+def due_fields(due: str, time_value: str | None, all_day_zone: tzinfo) -> dict:
     """The three date fields a task carries, from the edit grammar.
 
-    A date alone is all-day, written as TickTick's apps write it: midnight
-    in `zone`, the task's own. A clock turns it into a real instant in this
-    machine's timezone: a lone time is a due hour, a range is a duration —
+    A date alone is all-day: midnight in `all_day_zone`, the task's own. A
+    clock turns it into a real instant in this machine's timezone, the one
+    the panel shows clocks in: a lone time is a due hour, a range is a duration —
     and an end that is not after the start spills into the next day,
     because "23:30-00:30" means overnight, not nothing.
     """
     day = parse_due_date(due)
     if not time_value:
         try:
-            stamp = all_day_stamp(day, zone)
+            stamp = all_day_stamp(day, all_day_zone)
         except ValueError as error:
             raise TickTickError(str(error)) from None
         return {"dueDate": stamp, "startDate": stamp, "isAllDay": True}
@@ -1938,8 +1920,6 @@ def cmd_sync(args) -> int:
         synced_at = int(cache.get("syncedAt") or 0)
         age = (time.time() * 1000 - synced_at) / 1000
         if synced_at and age < float(max_age) and not read_outbox():
-            # A cache from before allDayDates existed would otherwise go
-            # without it until the next real sync.
             if "allDayDates" not in cache:
                 save_cache(cache)
             print(json.dumps({"ok": True, "skipped": True, "ageSeconds": round(age)}))

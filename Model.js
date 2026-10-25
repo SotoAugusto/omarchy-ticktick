@@ -26,16 +26,18 @@ function parseApiDate(value) {
 }
 
 // An all-day task is a calendar date wearing a timestamp, and only the
-// task's own zone says which date. The CLI reads it there and ships the
-// answer as `calendarDate` (see parseCache). Without one, the stamp's own
-// date is the marker this plugin used to write.
+// task's own zone says which date.
 function taskDueDate(task) {
   if (!task || !task.dueDate) return null
-  if (task.isAllDay) return localDay(task.calendarDate || String(task.dueDate).slice(0, 10))
+  if (task.isAllDay) return localDay(task.calendarDate || legacyMarkerDay(task.dueDate))
   return parseApiDate(task.dueDate)
 }
 
-// "YYYY-MM-DD" as local midnight, or null.
+// The date this plugin's old all-day marker, "YYYY-MM-DDT00:00:00+0000", names.
+function legacyMarkerDay(stamp) {
+  return String(stamp).slice(0, 10)
+}
+
 function localDay(text) {
   var head = String(text).split("-")
   if (head.length !== 3) return null
@@ -1327,8 +1329,6 @@ function heldSuffix(count) {
 
 // ---- cache -------------------------------------------------------------
 
-// These objects come from JSON.parse and are never sent back, so the extra
-// key cannot reach TickTick.
 function withCalendarDates(tasks, dates) {
   for (var i = 0; i < tasks.length; i++) {
     var task = tasks[i]
