@@ -5,8 +5,15 @@ from datetime import date
 from pathlib import Path
 from unittest import mock
 from zoneinfo import ZoneInfo
+import argparse
+import contextlib
+import inspect
+import io
+import json
 import os
 import runpy
+import tempfile
+import time
 import unittest
 import zoneinfo
 
@@ -456,6 +463,148 @@ class ZoneTests(unittest.TestCase):
             for task in ({}, {"timeZone": ""}, {"timeZone": "Mars/Olympus"}):
                 with self.subTest(task=task):
                     self.assertEqual(self.cli["zone_name"](self.cli["task_zone"](task)), "Asia/Tokyo")
+
+
+AMSTERDAM_TASK = {
+    "id": "amsterdam",
+    "projectId": "project-1",
+    "status": 0,
+    "isAllDay": True,
+    "timeZone": "Europe/Amsterdam",
+    "startDate": "2026-10-06T22:00:00.000+0000",
+    "dueDate": "2026-10-06T22:00:00.000+0000",
+}
+LEGACY_TASK = {
+    "id": "legacy",
+    "projectId": "project-1",
+    "status": 0,
+    "isAllDay": True,
+    "timeZone": "America/New_York",
+    "startDate": "2026-10-30T00:00:00.000+0000",
+    "dueDate": "2026-10-30T00:00:00.000+0000",
+}
+TIMED_TASK = {
+    "id": "timed",
+    "projectId": "project-1",
+    "status": 0,
+    "isAllDay": False,
+    "timeZone": "Europe/Amsterdam",
+    "startDate": "2026-10-07T07:30:00.000+0000",
+    "dueDate": "2026-10-07T07:30:00.000+0000",
+}
+DERIVED_KEYS = {"allDayDates", "calendarDate"}
+
+
+class CachePublisherTests(unittest.TestCase):
+    """Every write of the cache carries allDayDates, and nothing derived reaches TickTick."""
+
+    def setUp(self):
+        state_home = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(mock.patch.dict(os.environ, {"XDG_STATE_HOME": state_home, "TZ": "America/New_York"}))
+        self.cli = load_cli()
+        self.globals = self.cli["save_cache"].__globals__
+        self.dispatched = []
+
+        def fake_batch_task(_session, add=None, update=None, delete=None):
+            self.dispatched.append({"add": add or [], "update": update or [], "delete": delete or []})
+            return {}
+
+        def fake_with_session(callback):
+            session = {"token": "<REDACTED>"}
+            return callback(session), session
+
+        self.globals["batch_task"] = fake_batch_task
+        self.globals["with_session"] = fake_with_session
+
+    def offline(self):
+        def unreachable(_callback):
+            raise self.cli["TickTickError"]("offline", transient=True)
+
+        self.globals["with_session"] = unreachable
+
+    def published(self):
+        with open(self.cli["DATA_PATH"], encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def seed(self, *tasks):
+        self.cli["save_cache"]({"syncedAt": 1, "tasks": [dict(t) for t in tasks]})
+
+    def assert_no_derived_keys(self, tasks):
+        for task in tasks:
+            self.assertEqual(DERIVED_KEYS & set(task), set(), task.get("id"))
+
+    def test_the_cache_has_one_publisher(self):
+        source = CLI_PATH.read_text(encoding="utf-8")
+        self.assertEqual(source.count("_write_private(DATA_PATH"), 1)
+        self.assertIn("_write_private(DATA_PATH", inspect.getsource(self.cli["save_cache"]))
+
+    def test_all_day_dates_are_read_in_each_tasks_zone(self):
+        self.seed(AMSTERDAM_TASK, LEGACY_TASK, TIMED_TASK)
+
+        cache = self.published()
+
+        self.assertEqual(cache["allDayDates"], {"amsterdam": "2026-10-07", "legacy": "2026-10-30"})
+        self.assertEqual(cache["tasks"], [AMSTERDAM_TASK, LEGACY_TASK, TIMED_TASK])
+
+    def test_a_stale_projection_does_not_survive_a_write(self):
+        self.cli["save_cache"]({"tasks": [dict(TIMED_TASK)], "allDayDates": {"gone": "2026-01-01"}})
+
+        self.assertEqual(self.published()["allDayDates"], {})
+
+    def test_an_offline_add_is_dated_in_the_same_write(self):
+        self.seed(TIMED_TASK)
+        self.offline()
+
+        task = self.cli["create_task"]("Pay rent", None, "2026-10-07")
+
+        cache = self.published()
+        self.assertEqual(cache["allDayDates"], {task["id"]: "2026-10-07"})
+        self.assert_no_derived_keys(cache["tasks"])
+        self.assert_no_derived_keys(entry["payload"]["task"] for entry in self.cli["read_outbox"]())
+
+    def test_an_error_stamp_publishes_the_projection(self):
+        self.cli["_write_private"](self.cli["DATA_PATH"], {"tasks": [dict(AMSTERDAM_TASK)]})
+
+        self.cli["write_error_cache"]("offline", False)
+
+        self.assertEqual(self.published()["allDayDates"], {"amsterdam": "2026-10-07"})
+
+    def test_a_skipped_sync_upgrades_a_cache_from_before_the_projection(self):
+        synced_at = int(time.time() * 1000)
+        self.cli["_write_private"](self.cli["DATA_PATH"], {"syncedAt": synced_at, "tasks": [dict(AMSTERDAM_TASK)]})
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.cli["cmd_sync"](argparse.Namespace(max_age=600, scope="full"))
+
+        cache = self.published()
+        self.assertEqual(cache["syncedAt"], synced_at)
+        self.assertEqual(cache["allDayDates"], {"amsterdam": "2026-10-07"})
+
+    def test_writes_to_ticktick_carry_the_task_as_it_was_sent(self):
+        recurring = dict(AMSTERDAM_TASK, id="series", repeatFlag="RRULE:FREQ=WEEKLY")
+        self.seed(AMSTERDAM_TASK, LEGACY_TASK, recurring)
+
+        self.cli["update_task"]("amsterdam", {"title": "Renamed"})
+        self.cli["set_task_status"]("legacy", self.cli["STATUS_DONE"])
+        self.cli["set_task_status"]("series", self.cli["STATUS_DONE"])
+
+        sent = [task for batch in self.dispatched for task in batch["add"] + batch["update"]]
+        self.assertEqual(len(sent), 4)
+        self.assert_no_derived_keys(sent)
+
+    def test_queued_writes_carry_the_task_as_it_was_sent(self):
+        self.seed(AMSTERDAM_TASK)
+        self.offline()
+
+        self.cli["update_task"]("amsterdam", {"due": "2026-10-08"})
+        for entry in self.cli["read_outbox"]():
+            self.cli["replay"](entry, {"token": "<REDACTED>"})
+
+        self.assert_no_derived_keys(self.published()["tasks"])
+        self.assertEqual(self.published()["allDayDates"], {"amsterdam": "2026-10-08"})
+        sent = [task for batch in self.dispatched for task in batch["update"]]
+        self.assertEqual(len(sent), 1)
+        self.assert_no_derived_keys(sent)
 
 
 class MaterialisedOccurrenceTests(unittest.TestCase):
