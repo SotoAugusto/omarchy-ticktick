@@ -1670,3 +1670,16 @@ test('the line an edit pre-fills previews as the task it came from', () => {
   const line = Model.editLineFor(localSpan('21:00', '22:30'))
   assert.equal(Model.quickAddPreview(Model.parseQuickAdd(line), true), 'Today · 21:00–22:30')
 })
+
+test('all-day tasks stored as local midnight in UTC keep their calendar date', () => {
+  // TickTick apps store an all-day date as local midnight converted to UTC,
+  // which east of UTC lands on the previous UTC day.
+  const localMidnight = new Date(2026, 9, 7)
+  const due = Model.taskDueDate(task({ isAllDay: true, dueDate: iso(localMidnight) }))
+  assert.equal(Model.dateStamp(due), 20261007)
+})
+
+test('all-day tasks stored as literal UTC midnight keep their calendar date', () => {
+  const due = Model.taskDueDate(task({ isAllDay: true, dueDate: '2026-10-07T00:00:00.000+0000' }))
+  assert.equal(Model.dateStamp(due), 20261007)
+})

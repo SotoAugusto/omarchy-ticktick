@@ -486,6 +486,17 @@ class RepeatFromCompletionTests(unittest.TestCase):
         # Midnight Paris on the 26th, a year on.
         self.assertEqual(plan["series"]["dueDate"], "2027-09-25T22:00:00.000+0000")
 
+    def test_an_all_day_task_stays_on_midnight_across_dst(self):
+        # Midnight Paris on Thursday 22 Oct is 22:00 UTC; a week on, past
+        # the switch to winter time, midnight is 23:00 UTC.
+        plan = self.plan(
+            "2026-10-22T08:00:00.000+0000",
+            repeatFlag="RRULE:FREQ=WEEKLY",
+            isAllDay=True,
+            dueDate="2026-10-21T22:00:00.000+0000",
+        )
+        self.assertEqual(plan["series"]["dueDate"], "2026-10-28T23:00:00.000+0000")
+
     def test_a_positional_monthly_rule_keeps_its_position(self):
         # Third Friday of January 2027 -> third Friday of February.
         plan = self.plan(

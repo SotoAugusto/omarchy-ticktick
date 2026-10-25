@@ -25,12 +25,18 @@ function parseApiDate(value) {
   return isNaN(parsed.getTime()) ? null : parsed
 }
 
-// An all-day task is a calendar date wearing a timestamp. Converting it
-// through the local zone is how "due today" becomes "due yesterday" for
-// anyone west of UTC, so the date part is read literally instead.
+// An all-day task is a calendar date wearing a timestamp, in one of two
+// shapes. TickTick's own apps store local midnight as UTC, so in a zone
+// east of UTC "Oct 7" arrives as "2026-10-06T22:00:00+0000"; tasks written
+// as a literal "T00:00:00+0000" mark the date in UTC. A stamp that lands on
+// local midnight is the first shape and takes its local date; anything else
+// is read literally, so west-of-UTC zones don't slide back a day either.
 function taskDueDate(task) {
   if (!task || !task.dueDate) return null
   if (task.isAllDay) {
+    var instant = parseApiDate(task.dueDate)
+    if (instant && instant.getHours() === 0 && instant.getMinutes() === 0)
+      return startOfDay(instant)
     var head = String(task.dueDate).slice(0, 10).split("-")
     if (head.length === 3) {
       var day = new Date(Number(head[0]), Number(head[1]) - 1, Number(head[2]))
