@@ -378,12 +378,8 @@ def next_occurrence_date(rule: dict, dtstart, after, excluded=()):
 
 def _excluded_dates(task: dict, zone) -> set:
     """Occurrences already skipped. Landing on one would undo the skip."""
-    skipped = set()
-    for raw in task.get("exDate") or []:
-        stamp = parse_api_time(raw)
-        if stamp is not None:
-            skipped.add(stamp.astimezone(zone).date())
-    return skipped
+    all_day = bool(task.get("isAllDay"))
+    return {calendar_day(raw, zone, all_day) for raw in task.get("exDate") or []} - {None}
 
 
 def _advance_from_completion(rule: dict, dtstart, finished, excluded=()):
@@ -417,24 +413,12 @@ def _advance_from_completion(rule: dict, dtstart, finished, excluded=()):
     return candidate
 
 
-def _task_zone(task: dict):
-    """The zone the task's wall-clock time is written in.
-
-    Whole-day arithmetic has to happen in that zone or a timed task drifts an
-    hour across a DST boundary. Falling back to UTC keeps the plugin working
-    on a machine without a tz database rather than refusing the completion.
-    """
-    name = task.get("timeZone")
-    if name:
-        try:
-            return zoneinfo.ZoneInfo(str(name))
-        except Exception:  # noqa: BLE001 - a missing zone is not worth failing a completion
-            pass
-    return timezone.utc
-
-
 def _shifted_dates(task: dict, zone, delta: timedelta) -> dict:
     """Move start and due by whole days, preserving duration and wall time.
+
+    Whole-day arithmetic happens in the task's zone, or a timed task drifts
+    an hour across a DST boundary. An all-day date is moved as a calendar
+    day and written back in TickTick's encoding, whichever shape it came in.
 
     Also used for a checklist item, which carries a `startDate` of its own
     but takes its all-day flag from the task it belongs to.
@@ -444,13 +428,13 @@ def _shifted_dates(task: dict, zone, delta: timedelta) -> dict:
         stamp = parse_api_time(task.get(key))
         if stamp is None:
             continue
-        local = stamp.astimezone(zone)
-        if task.get("isAllDay") and (local.hour, local.minute) != (0, 0):
-            # A literal UTC midnight marker, not an instant. TickTick's own
-            # apps write local midnight instead, which falls through to the
-            # wall-clock shift so it stays on midnight across a DST change.
-            moved[key] = to_api_time(stamp + delta)
+        if task.get("isAllDay"):
+            try:
+                moved[key] = all_day_stamp(read_all_day(stamp, zone) + delta, zone)
+            except ValueError as error:
+                raise UnsupportedRecurrence(str(error)) from None
         else:
+            local = stamp.astimezone(zone)
             moved[key] = to_api_time((local.replace(tzinfo=None) + delta).replace(tzinfo=zone))
     return moved
 
@@ -532,17 +516,16 @@ def plan_recurring_completion(task: dict, completed_time: str) -> dict | None:
     completion is the correct write rather than a refusal.
     """
     rule = parse_repeat_rule(task.get("repeatFlag"))
-    zone = _task_zone(task)
+    zone = task_zone(task)
+    all_day = bool(task.get("isAllDay"))
 
-    due = parse_api_time(task.get("dueDate") or task.get("startDate"))
-    if due is None:
+    due_day = calendar_day(task.get("dueDate") or task.get("startDate"), zone, all_day)
+    if due_day is None:
         raise UnsupportedRecurrence("it has no due date to advance")
-    due_local = due.astimezone(zone).date()
 
-    first = parse_api_time(task.get("repeatFirstDate"))
-    dtstart = first.astimezone(zone).date() if first else due_local
-    if due_local < dtstart:
-        dtstart = due_local
+    dtstart = calendar_day(task.get("repeatFirstDate"), zone, all_day) or due_day
+    if due_day < dtstart:
+        dtstart = due_day
     excluded = _excluded_dates(task, zone)
 
     if str(task.get("repeatFrom") or "") == REPEAT_FROM_COMPLETION:
@@ -552,18 +535,18 @@ def plan_recurring_completion(task: dict, completed_time: str) -> dict | None:
         # ahead of today — a birthday, a booking, anything imported with its
         # real date — moves on from its own due date, not from this
         # afternoon, or completing it once rewrites the day it falls on.
-        if anchor < due_local:
-            anchor = due_local
+        if anchor < due_day:
+            anchor = due_day
         next_date = _advance_from_completion(rule, dtstart, anchor, excluded)
     else:
-        next_date = next_occurrence_date(rule, dtstart, due_local, excluded)
+        next_date = next_occurrence_date(rule, dtstart, due_day, excluded)
 
     if rule["count"] is not None and rule["count"] <= 1:
         return None
     if rule["until"] and next_date > rule["until"]:
         return None
 
-    delta = next_date - due_local
+    delta = next_date - due_day
     return {
         "occurrence": _completed_occurrence(task, completed_time),
         "series": _advanced_series(

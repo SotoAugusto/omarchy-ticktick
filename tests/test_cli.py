@@ -350,19 +350,70 @@ class RecurrenceTimezoneTests(unittest.TestCase):
         # Still 9am locally a week later, which is one hour later in UTC.
         self.assertEqual(plan["series"]["dueDate"], "2026-11-06T14:00:00.000+0000")
 
-    def test_all_day_tasks_keep_their_midnight_marker(self):
-        task = {
+    def legacy_all_day(self, **fields):
+        return {
             "id": "task-1",
             "repeatFlag": "RRULE:FREQ=DAILY;INTERVAL=1",
             "isAllDay": True,
             "timeZone": "America/New_York",
             "startDate": "2026-10-30T00:00:00.000+0000",
             "dueDate": "2026-10-30T00:00:00.000+0000",
+            **fields,
         }
 
-        plan = self.cli["plan_recurring_completion"](task, "2026-10-30T14:00:00.000+0000")
+    def test_a_legacy_all_day_marker_rolls_forward_as_local_midnight(self):
+        plan = self.cli["plan_recurring_completion"](self.legacy_all_day(), "2026-10-30T14:00:00.000+0000")
 
-        self.assertEqual(plan["series"]["dueDate"], "2026-10-31T00:00:00.000+0000")
+        # The next day, written the way TickTick's apps write it: midnight
+        # New York, still on daylight time.
+        self.assertEqual(plan["series"]["dueDate"], "2026-10-31T04:00:00.000+0000")
+        self.assertEqual(plan["series"]["startDate"], "2026-10-31T04:00:00.000+0000")
+
+    def test_a_legacy_marker_west_of_utc_keeps_its_weekday(self):
+        # The marker names Friday 30 October. Read as an instant in New York
+        # it is Thursday evening, which rolled a Fridays-only task to Saturday.
+        plan = self.cli["plan_recurring_completion"](
+            self.legacy_all_day(repeatFlag="RRULE:FREQ=WEEKLY;BYDAY=FR"),
+            "2026-10-30T14:00:00.000+0000",
+        )
+
+        self.assertEqual(plan["series"]["dueDate"], "2026-11-06T05:00:00.000+0000")
+
+    def test_all_day_first_dates_and_skips_read_as_calendar_days(self):
+        plan = self.cli["plan_recurring_completion"](
+            self.legacy_all_day(
+                repeatFlag="RRULE:FREQ=DAILY;INTERVAL=2",
+                repeatFirstDate="2026-10-28T00:00:00.000+0000",
+                exDate=["2026-11-01T00:00:00.000+0000"],
+            ),
+            "2026-10-30T14:00:00.000+0000",
+        )
+
+        # Every other day from the 28th: the 1st is skipped, so the 3rd.
+        self.assertEqual(plan["series"]["dueDate"], "2026-11-03T05:00:00.000+0000")
+
+    def test_a_series_rolling_onto_a_day_the_zone_skipped_is_refused(self):
+        task = self.legacy_all_day(
+            timeZone="Pacific/Apia",
+            startDate="2011-12-29T10:00:00.000+0000",
+            dueDate="2011-12-29T10:00:00.000+0000",
+        )
+
+        with self.assertRaises(self.cli["UnsupportedRecurrence"]):
+            self.cli["plan_recurring_completion"](task, "2011-12-29T10:00:00.000+0000")
+
+    def test_a_timed_series_without_a_zone_repeats_in_the_machines_zone(self):
+        task = {
+            "id": "task-1",
+            "repeatFlag": "RRULE:FREQ=WEEKLY;INTERVAL=1",
+            "startDate": "2026-10-30T13:00:00.000+0000",
+            "dueDate": "2026-10-30T13:00:00.000+0000",
+        }
+
+        with mock.patch.dict(os.environ, {"TZ": "America/New_York"}):
+            plan = self.cli["plan_recurring_completion"](task, "2026-10-30T14:00:00.000+0000")
+
+        self.assertEqual(plan["series"]["dueDate"], "2026-11-06T14:00:00.000+0000")
 
 
 class CalendarDayTests(unittest.TestCase):
