@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Regression tests for state-changing CLI operations."""
 
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from unittest import mock
 from zoneinfo import ZoneInfo
@@ -605,6 +605,73 @@ class CachePublisherTests(unittest.TestCase):
         sent = [task for batch in self.dispatched for task in batch["update"]]
         self.assertEqual(len(sent), 1)
         self.assert_no_derived_keys(sent)
+
+
+class DueWriterTests(unittest.TestCase):
+    """New and edited dates are written the way TickTick's own apps write them."""
+
+    def setUp(self):
+        state_home = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(mock.patch.dict(os.environ, {"XDG_STATE_HOME": state_home, "TZ": "America/New_York"}))
+        self.cli = load_cli()
+        self.globals = self.cli["create_task"].__globals__
+        self.globals["with_session"] = lambda callback: (callback({"token": "<REDACTED>"}), {})
+        self.globals["batch_task"] = lambda _session, **_writes: {}
+
+    def test_an_all_day_date_is_midnight_in_the_given_zone(self):
+        fields = self.cli["due_fields"]("2026-09-06", None, ZoneInfo("America/Santiago"))
+
+        self.assertEqual(
+            fields,
+            {"dueDate": "2026-09-06T04:00:00.000+0000", "startDate": "2026-09-06T04:00:00.000+0000", "isAllDay": True},
+        )
+
+    def test_a_day_the_zone_skipped_is_refused(self):
+        with self.assertRaises(self.cli["TickTickError"]):
+            self.cli["due_fields"]("2011-12-30", None, ZoneInfo("Pacific/Apia"))
+
+    def test_today_is_the_machines_today(self):
+        with mock.patch.dict(os.environ, {"TZ": "Pacific/Kiritimati"}):
+            fields = self.cli["due_fields"]("today", None, ZoneInfo("UTC"))
+
+        today = datetime.now(ZoneInfo("Pacific/Kiritimati")).date()
+        self.assertEqual(fields["dueDate"], f"{today.isoformat()}T00:00:00.000+0000")
+
+    def test_a_clock_time_stays_in_the_machines_zone(self):
+        fields = self.cli["due_fields"]("2026-10-07", "21:00", ZoneInfo("Pacific/Kiritimati"))
+
+        expected = self.cli["to_api_time"](datetime(2026, 10, 7, 21, 0))
+        self.assertEqual(fields, {"dueDate": expected, "startDate": expected, "isAllDay": False})
+
+    def test_a_new_task_records_the_machine_zone_it_was_dated_in(self):
+        with mock.patch.dict(os.environ, {"TZ": "Asia/Tokyo"}):
+            task = self.cli["create_task"]("Pay rent", None, "2026-10-08")
+
+        self.assertEqual(task["timeZone"], "Asia/Tokyo")
+        self.assertEqual(task["dueDate"], "2026-10-07T15:00:00.000+0000")
+
+    def test_an_edit_keeps_the_tasks_own_zone(self):
+        edited = self.cli["apply_edit"](dict(AMSTERDAM_TASK), {"due": "2026-10-08"})
+
+        self.assertEqual(edited["timeZone"], "Europe/Amsterdam")
+        self.assertEqual(edited["dueDate"], "2026-10-07T22:00:00.000+0000")
+        self.assertEqual(edited["startDate"], "2026-10-07T22:00:00.000+0000")
+
+    def test_an_edit_records_the_zone_on_a_task_without_one(self):
+        task = {key: value for key, value in AMSTERDAM_TASK.items() if key != "timeZone"}
+
+        edited = self.cli["apply_edit"](task, {"due": "2026-10-08"})
+
+        self.assertEqual(edited["timeZone"], "America/New_York")
+        self.assertEqual(edited["dueDate"], "2026-10-08T04:00:00.000+0000")
+
+    def test_an_edit_that_leaves_the_date_alone_leaves_the_zone_alone(self):
+        task = {key: value for key, value in AMSTERDAM_TASK.items() if key != "timeZone"}
+
+        edited = self.cli["apply_edit"](task, {"title": "Renamed"})
+
+        self.assertNotIn("timeZone", edited)
+        self.assertEqual(edited["dueDate"], AMSTERDAM_TASK["dueDate"])
 
 
 class MaterialisedOccurrenceTests(unittest.TestCase):

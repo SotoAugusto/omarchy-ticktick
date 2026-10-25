@@ -1536,7 +1536,12 @@ def apply_edit(task: dict, fields: dict) -> dict:
     if "tags" in fields:
         edited["tags"] = [str(t).strip().lower() for t in (fields["tags"] or []) if str(t).strip()]
     if "due" in fields:
-        edited.update(due_fields(fields["due"], fields.get("time")))
+        zone = task_zone(task)
+        if not task.get("timeZone"):
+            # The new date is written in this zone, so the task has to say so
+            # or the next reader on another machine reads it in its own.
+            edited["timeZone"] = zone_name(zone)
+        edited.update(due_fields(fields["due"], fields.get("time"), zone))
     edited["modifiedTime"] = now_api_time()
     return edited
 
@@ -1634,6 +1639,7 @@ def create_task(
     time_value: str | None = None,
 ) -> dict:
     cache = _read_json(DATA_PATH)
+    zone = machine_zone()
     task = {
         "id": object_id(),
         "projectId": project_id or cache.get("inboxId") or "",
@@ -1644,14 +1650,14 @@ def create_task(
         # Tasks reference tags by their lowercase name, not their label.
         "tags": [str(t).strip().lower() for t in (tags or []) if str(t).strip()],
         "sortOrder": -int(time.time() * 1000),
-        "timeZone": local_timezone_name(),
+        "timeZone": zone_name(zone),
         "isAllDay": True,
         "items": [],
         "createdTime": now_api_time(),
         "modifiedTime": now_api_time(),
     }
     if due:
-        task.update(due_fields(due, time_value))
+        task.update(due_fields(due, time_value, zone))
 
     def call(session):
         return batch_task(session, add=[task])
@@ -1668,26 +1674,10 @@ def create_task(
     return task
 
 
-def local_timezone_name() -> str:
-    try:
-        with open("/etc/timezone", encoding="utf-8") as handle:
-            name = handle.read().strip()
-            if name:
-                return name
-    except OSError:
-        pass
-    link = "/etc/localtime"
-    if os.path.islink(link):
-        target = os.readlink(link)
-        if "zoneinfo/" in target:
-            return target.split("zoneinfo/", 1)[1]
-    return "UTC"
-
-
-def parse_due_date(value: str) -> datetime:
-    """A due word as a local calendar date, at midnight."""
+def parse_due_date(value: str) -> date:
+    """A due word as a calendar date. "today" is today on this machine."""
     text = value.strip().lower()
-    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    today = datetime.now(machine_zone()).date()
     if text == "today":
         return today
     if text == "tomorrow":
@@ -1695,13 +1685,9 @@ def parse_due_date(value: str) -> datetime:
     if text == "yesterday":
         return today - timedelta(days=1)
     try:
-        return datetime.strptime(value.strip(), "%Y-%m-%d")
+        return datetime.strptime(value.strip(), "%Y-%m-%d").date()
     except ValueError as error:
         raise TickTickError("--due wants today, tomorrow, yesterday, or YYYY-MM-DD") from error
-
-
-def parse_due_argument(value: str) -> str:
-    return parse_due_date(value).strftime("%Y-%m-%dT00:00:00.000+0000")
 
 
 def parse_time_argument(value: str) -> tuple[int, int | None]:
@@ -1731,22 +1717,25 @@ def parse_time_argument(value: str) -> tuple[int, int | None]:
     return start, end
 
 
-def due_fields(due: str, time_value: str | None = None) -> dict:
+def due_fields(due: str, time_value: str | None, zone: tzinfo) -> dict:
     """The three date fields a task carries, from the edit grammar.
 
-    A date alone is all-day at local midnight, as it always was. A clock
-    turns it into a real instant in this machine's timezone: a lone time is
-    a due hour, a range is a duration — and an end that is not after the
-    start spills into the next day, because "23:30-00:30" means overnight,
-    not nothing.
+    A date alone is all-day, written as TickTick's apps write it: midnight
+    in `zone`, the task's own. A clock turns it into a real instant in this
+    machine's timezone: a lone time is a due hour, a range is a duration —
+    and an end that is not after the start spills into the next day,
+    because "23:30-00:30" means overnight, not nothing.
     """
-    target = parse_due_date(due)
+    day = parse_due_date(due)
     if not time_value:
-        stamp = target.strftime("%Y-%m-%dT00:00:00.000+0000")
+        try:
+            stamp = all_day_stamp(day, zone)
+        except ValueError as error:
+            raise TickTickError(str(error)) from None
         return {"dueDate": stamp, "startDate": stamp, "isAllDay": True}
 
     start_minutes, end_minutes = parse_time_argument(time_value)
-    start_dt = target + timedelta(minutes=start_minutes)
+    start_dt = datetime(day.year, day.month, day.day) + timedelta(minutes=start_minutes)
     if end_minutes is None:
         stamp = to_api_time(start_dt)
         return {"dueDate": stamp, "startDate": stamp, "isAllDay": False}
