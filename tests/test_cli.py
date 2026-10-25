@@ -124,6 +124,85 @@ class RecurringCompletionTests(unittest.TestCase):
 
         self.assertEqual(series["items"][0]["startDate"], "2026-09-03T08:00:00.000+0000")
 
+    def test_a_timed_subtask_of_an_all_day_task_keeps_its_hour(self):
+        task = self.recurring(
+            isAllDay=True,
+            timeZone="Europe/Paris",
+            startDate="2026-09-01T22:00:00.000+0000",
+            dueDate="2026-09-01T22:00:00.000+0000",
+            items=[{"id": "item-1", "title": "step", "isAllDay": False, "startDate": "2026-09-02T12:00:00.000+0000"}],
+        )
+        self.use_task(task)
+
+        series = self.cli["set_task_status"](task["id"], self.cli["STATUS_DONE"])
+
+        self.assertEqual(series["dueDate"], "2026-09-02T22:00:00.000+0000")
+        self.assertEqual(series["items"][0]["startDate"], "2026-09-03T12:00:00.000+0000")
+
+    def test_an_unflagged_timed_subtask_of_an_all_day_task_keeps_its_hour(self):
+        task = self.recurring(
+            isAllDay=True,
+            timeZone="Europe/Paris",
+            startDate="2026-09-01T22:00:00.000+0000",
+            dueDate="2026-09-01T22:00:00.000+0000",
+            items=[{"id": "item-1", "title": "step", "startDate": "2026-09-02T12:00:00.000+0000"}],
+        )
+        self.use_task(task)
+
+        series = self.cli["set_task_status"](task["id"], self.cli["STATUS_DONE"])
+
+        self.assertEqual(series["items"][0]["startDate"], "2026-09-03T12:00:00.000+0000")
+
+    def test_a_subtask_at_utc_midnight_keeps_its_hour_east_of_utc(self):
+        task = self.recurring(
+            isAllDay=True,
+            timeZone="Asia/Tokyo",
+            startDate="2026-09-01T15:00:00.000+0000",
+            dueDate="2026-09-01T15:00:00.000+0000",
+            items=[{"id": "item-1", "title": "step", "startDate": "2026-09-02T00:00:00.000+0000"}],
+        )
+        self.use_task(task)
+
+        series = self.cli["set_task_status"](task["id"], self.cli["STATUS_DONE"])
+
+        self.assertEqual(series["items"][0]["startDate"], "2026-09-03T00:00:00.000+0000")
+
+    def test_a_dated_subtask_follows_its_task_across_a_midnight_gap(self):
+        # Havana springs forward at midnight on 8 March 2026, so that day
+        # begins at 01:00 and the next at 00:00 again.
+        stamp = "2026-03-07T05:00:00.000+0000"
+        task = self.recurring(
+            isAllDay=True,
+            timeZone="America/Havana",
+            startDate=stamp,
+            dueDate=stamp,
+            items=[{"id": "item-1", "title": "step", "startDate": stamp}],
+        )
+        for expected in ("2026-03-08T05:00:00.000+0000", "2026-03-09T04:00:00.000+0000"):
+            task = self.cli["plan_recurring_completion"](task, "2026-03-07T15:00:00.000+0000")["series"]
+            self.assertEqual((task["dueDate"], task["items"][0]["startDate"]), (expected, expected))
+
+    def test_a_subtask_with_an_unknown_zone_moves_on_its_tasks_days(self):
+        task = self.recurring(
+            isAllDay=True,
+            timeZone="Europe/Paris",
+            startDate="2026-09-01T22:00:00.000+0000",
+            dueDate="2026-09-01T22:00:00.000+0000",
+            items=[{
+                "id": "item-1",
+                "title": "step",
+                "isAllDay": True,
+                "timeZone": "Mars/Olympus",
+                "startDate": "2026-09-01T22:00:00.000+0000",
+            }],
+        )
+        self.use_task(task)
+
+        with mock.patch.dict(os.environ, {"TZ": "Asia/Tokyo"}):
+            series = self.cli["set_task_status"](task["id"], self.cli["STATUS_DONE"])
+
+        self.assertEqual(series["items"][0]["startDate"], "2026-09-02T22:00:00.000+0000")
+
     def test_a_skipped_occurrence_is_not_rolled_back_onto(self):
         task = self.recurring(exDate=["2026-09-03T09:00:00.000+0000"])
         self.use_task(task)
@@ -755,7 +834,6 @@ class DueWriterTests(unittest.TestCase):
         # name UTC-12, 26 hours away, so the two never share a date.
         with libc_tz("XYZ-14"), machine_files("Etc/GMT+12", "../usr/share/zoneinfo/Etc/GMT+12"):
             today = self.cli["parse_due_date"]("today")
-            self.assertEqual(today, date.today())
         self.assertEqual(today, datetime.now(timezone(timedelta(hours=14))).date())
 
     def test_a_new_task_records_a_posix_zone_by_its_plain_name(self):

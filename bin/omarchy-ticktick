@@ -416,8 +416,7 @@ def _advance_from_completion(rule: dict, dtstart, finished, excluded=()):
 def _shifted_dates(task: dict, zone, delta: timedelta) -> dict:
     """Move start and due by whole days, preserving duration and wall time.
 
-    Also used for a checklist item, which carries a `startDate` of its own
-    but takes its all-day flag from the task it belongs to.
+    Also used for a checklist item, through `_item_dates`.
     """
     moved = {}
     for key in ("startDate", "dueDate"):
@@ -445,6 +444,24 @@ def _with_count(flag: str, count: int) -> str:
         else:
             parts.append(chunk)
     return f"{head}:{';'.join(parts)}"
+
+
+def _item_dates(item: dict, task: dict, zone, delta: timedelta) -> dict:
+    """A checklist item's `startDate`, moved with its task.
+
+    An item without an `isAllDay` of its own under an all-day task is a date
+    only if its stamp is exactly how a date is written in its zone; a 14:00
+    reminder stays at 14:00. The plugin never wrote its old UTC-midnight
+    marker on items, so that shape counts as a clock time here, and so does
+    an item an older roll-forward already pushed off midnight.
+    """
+    zone = _load_zone(item.get("timeZone")) or zone
+    if "isAllDay" in item:
+        all_day = bool(item["isAllDay"])
+    else:
+        stamp = parse_api_time(item.get("startDate"))
+        all_day = bool(task.get("isAllDay")) and stamp is not None and _is_date_stamp(stamp, zone)
+    return _shifted_dates({**item, "isAllDay": all_day}, zone, delta)
 
 
 def _completed_occurrence(task: dict, completed_time: str) -> dict:
@@ -491,7 +508,7 @@ def _advanced_series(task: dict, moved: dict, zone, delta: timedelta, completed_
             item,
             status=0,
             completedTime=None,
-            **_shifted_dates({**item, "isAllDay": task.get("isAllDay")}, zone, delta),
+            **_item_dates(item, task, zone, delta),
         )
         for item in task.get("items") or []
     ]
@@ -891,6 +908,8 @@ def parse_api_time(value: str | None) -> datetime | None:
 
 
 def _load_zone(name) -> tzinfo | None:
+    if not name:
+        return None
     try:
         return zoneinfo.ZoneInfo(str(name))
     except (zoneinfo.ZoneInfoNotFoundError, ValueError, OSError):
@@ -943,8 +962,7 @@ def zone_name(zone: tzinfo) -> str:
 
 
 def task_zone(task: dict) -> tzinfo:
-    name = task.get("timeZone")
-    return (_load_zone(name) if name else None) or machine_zone()
+    return _load_zone(task.get("timeZone")) or machine_zone()
 
 
 def read_all_day(stamp: datetime, zone: tzinfo) -> date:
@@ -976,6 +994,14 @@ def all_day_stamp(day: date, zone: tzinfo) -> str:
     if first.astimezone(zone).date() != day:
         raise ValueError(f"{day.isoformat()} does not exist in {zone_name(zone)}")
     return to_api_time(first)
+
+
+def _is_date_stamp(stamp: datetime, zone) -> bool:
+    """True when `stamp` is exactly how some date is written in `zone`."""
+    try:
+        return all_day_stamp(read_all_day(stamp, zone), zone) == to_api_time(stamp)
+    except ValueError:
+        return False
 
 
 def calendar_day(raw: str | None, zone: tzinfo, all_day: bool) -> date | None:
@@ -1511,7 +1537,7 @@ def apply_edit(task: dict, fields: dict) -> dict:
     if "tags" in fields:
         edited["tags"] = [str(t).strip().lower() for t in (fields["tags"] or []) if str(t).strip()]
     if "due" in fields:
-        own = _load_zone(task.get("timeZone")) if task.get("timeZone") else None
+        own = _load_zone(task.get("timeZone"))
         zone = own or machine_zone()
         if own is None:
             edited["timeZone"] = zone_name(zone)
