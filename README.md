@@ -140,6 +140,23 @@ Panel.qml              the popup — a view of the service
 BarWidget.qml          the bar slot
 ```
 
+An all-day task is a calendar date that TickTick carries as an instant:
+midnight in the task's own `timeZone`, converted to UTC. Which date that is
+depends on the zone, and QML cannot read a time in any zone but the
+machine's. So the CLI reads every all-day date once, in the task's zone, and
+each write of `data.json` carries the answer as `allDayDates`, a map from
+task id to `YYYY-MM-DD`. The panel shows that date and does no time-zone
+math. The task objects beside it are exactly what TickTick sent, because
+the CLI sends them back verbatim on every write.
+
+```json
+{
+  "tasks": [{ "id": "a1", "isAllDay": true, "timeZone": "Europe/Amsterdam",
+              "dueDate": "2026-10-06T22:00:00.000+0000" }],
+  "allDayDates": { "a1": "2026-10-07" }
+}
+```
+
 ### Multiple monitors
 
 A bar surface is created per monitor, so the widget and its panel exist once
@@ -278,9 +295,10 @@ CI runs the same suite on every push to `master` and every pull request,
 along with a compile check of the CLI and a parse of `manifest.json`.
 
 `Model.js` holds every piece of logic that can be wrong without being
-visibly wrong — timezone handling on all-day due dates, streak counting
-across a day that is still open, overdue sorting — so it is plain JS with no
-QML imports and runs under node.
+visibly wrong — due labels, streak counting across a day that is still
+open, overdue sorting — so it is plain JS with no QML imports and runs under
+node. Reading an all-day date in its task's zone is the CLI's job, and its
+tests check that against every zone in the tz database.
 
 What a notification decides — which moment fires, once, and what the popup
 says — is in there too. That it actually reaches the desktop is one D-Bus
@@ -637,7 +655,9 @@ call. The finished occurrence is a copy with a fresh id, its recurrence
 fields cleared and `repeatTaskId` pointing back at the series. The series
 keeps its id, stays open, and its start and due dates move by whole days in
 the task's own timezone — so a 9am task is still at 9am after the clocks
-change, and a duration survives the move. Subtask ticks, progress and focus
+change, and a duration survives the move. An all-day date moves by calendar
+days and is written as midnight in its zone, as TickTick's apps write it.
+Subtask ticks, progress and focus
 summaries reset, because last week's are not this week's.
 
 That means the next occurrence date is computed here rather than by TickTick,

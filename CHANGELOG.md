@@ -12,6 +12,12 @@
 - All-day tasks no longer show a day early east of UTC. TickTick stores
   them as local midnight in UTC, so "tomorrow" in Amsterdam arrived dated
   today and sat in the Today view.
+- An all-day task shows its own date wherever you are. Its date is read in
+  the task's time zone rather than this machine's, so an Amsterdam task due
+  the 7th no longer shows on the 6th from New York. Dates this plugin sets
+  are written the way TickTick's apps write them, so those apps agree.
+- A recurring all-day task west of UTC rolls to its next real occurrence. A
+  weekly Friday task in New York landed on Saturday.
 - A recurring all-day task stays on its day when the series rolls across a
   daylight-saving change, instead of landing an hour short on the day before.
 - Late is a day behind, not an hour past. A timed task due at 10:30 counts
