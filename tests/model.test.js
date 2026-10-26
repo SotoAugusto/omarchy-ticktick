@@ -1,5 +1,7 @@
 const test = require('node:test')
 const assert = require('node:assert')
+const fs = require('node:fs')
+const path = require('node:path')
 const Model = require('../Model.js')
 
 const NOW = new Date(2026, 7, 12, 14, 0, 0) // 2026-08-12 14:00 local
@@ -1671,15 +1673,57 @@ test('the line an edit pre-fills previews as the task it came from', () => {
   assert.equal(Model.quickAddPreview(Model.parseQuickAdd(line), true), 'Today · 21:00–22:30')
 })
 
+function cachedTasks(tasks, allDayDates) {
+  return Model.parseCache(JSON.stringify({ tasks: tasks, allDayDates: allDayDates })).tasks
+}
+
 test('all-day tasks stored as local midnight in UTC keep their calendar date', () => {
   // TickTick apps store an all-day date as local midnight converted to UTC,
   // which east of UTC lands on the previous UTC day.
   const localMidnight = new Date(2026, 9, 7)
-  const due = Model.taskDueDate(task({ isAllDay: true, dueDate: iso(localMidnight) }))
-  assert.equal(Model.dateStamp(due), 20261007)
+  const [stored] = cachedTasks([task({ id: 'a1', isAllDay: true, dueDate: iso(localMidnight) })], { a1: '2026-10-07' })
+  assert.equal(Model.dateStamp(Model.taskDueDate(stored)), 20261007)
 })
 
 test('all-day tasks stored as literal UTC midnight keep their calendar date', () => {
   const due = Model.taskDueDate(task({ isAllDay: true, dueDate: '2026-10-07T00:00:00.000+0000' }))
   assert.equal(Model.dateStamp(due), 20261007)
+})
+
+test('an all-day task shows the day its own zone gave it, wherever it is viewed', () => {
+  const [stored] = cachedTasks(
+    [task({ id: 'a1', isAllDay: true, timeZone: 'Europe/Amsterdam', dueDate: '2026-10-06T22:00:00.000+0000' })],
+    { a1: '2026-10-07' }
+  )
+  assert.equal(Model.dateStamp(Model.taskDueDate(stored)), 20261007)
+  assert.equal(Model.dueLabel(stored, new Date(2026, 9, 7, 12, 0)), 'Today')
+})
+
+test('a task the projection does not list keeps reading its stamp', () => {
+  const [allDay, timed] = cachedTasks(
+    [
+      task({ id: 'a1', dueDate: '2026-10-07T00:00:00.000+0000' }),
+      task({ id: 't1', isAllDay: false, dueDate: iso(new Date(2026, 9, 7, 9, 30)) })
+    ],
+    { other: '2026-10-09' }
+  )
+  assert.equal(Model.dateStamp(Model.taskDueDate(allDay)), 20261007)
+  assert.equal(Model.taskDueDate(timed).getTime(), new Date(2026, 9, 7, 9, 30).getTime())
+})
+
+test('the cache fixture the CLI writes reads back as each task\'s own day', () => {
+  const cache = Model.parseCache(fs.readFileSync(path.join(__dirname, 'fixtures', 'all-day-cache.json'), 'utf8'))
+  const byId = Object.fromEntries(cache.tasks.map(t => [t.id, t]))
+  const noon = new Date(2026, 9, 7, 12, 0)
+
+  assert.equal(Model.dateStamp(Model.taskDueDate(byId.amsterdam)), 20261007)
+  assert.equal(Model.dueLabel(byId.amsterdam, noon), 'Today')
+  assert.equal(Model.dateStamp(Model.taskDueDate(byId.legacy)), 20261008)
+  assert.equal(Model.dueLabel(byId.legacy, noon), 'Tomorrow')
+
+  // A timed task is an instant, so its clock is whatever this zone reads.
+  const at = new Date(Date.UTC(2026, 9, 7, 20, 30))
+  const clock = String(at.getHours()).padStart(2, '0') + ':' + String(at.getMinutes()).padStart(2, '0')
+  assert.equal(Model.taskDueDate(byId.timed).getTime(), at.getTime())
+  assert.equal(Model.dueLabel(byId.timed, at), clock)
 })

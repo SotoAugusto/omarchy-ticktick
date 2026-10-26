@@ -1,9 +1,19 @@
 #!/usr/bin/env python3
 """Regression tests for state-changing CLI operations."""
 
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
+from zoneinfo import ZoneInfo, available_timezones
+import argparse
+import contextlib
+import inspect
+import io
+import json
+import os
 import runpy
+import tempfile
+import time
 import unittest
 
 
@@ -113,6 +123,85 @@ class RecurringCompletionTests(unittest.TestCase):
         series = self.cli["set_task_status"](task["id"], self.cli["STATUS_DONE"])
 
         self.assertEqual(series["items"][0]["startDate"], "2026-09-03T08:00:00.000+0000")
+
+    def test_a_timed_subtask_of_an_all_day_task_keeps_its_hour(self):
+        task = self.recurring(
+            isAllDay=True,
+            timeZone="Europe/Paris",
+            startDate="2026-09-01T22:00:00.000+0000",
+            dueDate="2026-09-01T22:00:00.000+0000",
+            items=[{"id": "item-1", "title": "step", "isAllDay": False, "startDate": "2026-09-02T12:00:00.000+0000"}],
+        )
+        self.use_task(task)
+
+        series = self.cli["set_task_status"](task["id"], self.cli["STATUS_DONE"])
+
+        self.assertEqual(series["dueDate"], "2026-09-02T22:00:00.000+0000")
+        self.assertEqual(series["items"][0]["startDate"], "2026-09-03T12:00:00.000+0000")
+
+    def test_an_unflagged_timed_subtask_of_an_all_day_task_keeps_its_hour(self):
+        task = self.recurring(
+            isAllDay=True,
+            timeZone="Europe/Paris",
+            startDate="2026-09-01T22:00:00.000+0000",
+            dueDate="2026-09-01T22:00:00.000+0000",
+            items=[{"id": "item-1", "title": "step", "startDate": "2026-09-02T12:00:00.000+0000"}],
+        )
+        self.use_task(task)
+
+        series = self.cli["set_task_status"](task["id"], self.cli["STATUS_DONE"])
+
+        self.assertEqual(series["items"][0]["startDate"], "2026-09-03T12:00:00.000+0000")
+
+    def test_a_subtask_at_utc_midnight_keeps_its_hour_east_of_utc(self):
+        task = self.recurring(
+            isAllDay=True,
+            timeZone="Asia/Tokyo",
+            startDate="2026-09-01T15:00:00.000+0000",
+            dueDate="2026-09-01T15:00:00.000+0000",
+            items=[{"id": "item-1", "title": "step", "startDate": "2026-09-02T00:00:00.000+0000"}],
+        )
+        self.use_task(task)
+
+        series = self.cli["set_task_status"](task["id"], self.cli["STATUS_DONE"])
+
+        self.assertEqual(series["items"][0]["startDate"], "2026-09-03T00:00:00.000+0000")
+
+    def test_a_dated_subtask_follows_its_task_across_a_midnight_gap(self):
+        # Havana springs forward at midnight on 8 March 2026, so that day
+        # begins at 01:00 and the next at 00:00 again.
+        stamp = "2026-03-07T05:00:00.000+0000"
+        task = self.recurring(
+            isAllDay=True,
+            timeZone="America/Havana",
+            startDate=stamp,
+            dueDate=stamp,
+            items=[{"id": "item-1", "title": "step", "startDate": stamp}],
+        )
+        for expected in ("2026-03-08T05:00:00.000+0000", "2026-03-09T04:00:00.000+0000"):
+            task = self.cli["plan_recurring_completion"](task, "2026-03-07T15:00:00.000+0000")["series"]
+            self.assertEqual((task["dueDate"], task["items"][0]["startDate"]), (expected, expected))
+
+    def test_a_subtask_with_an_unknown_zone_moves_on_its_tasks_days(self):
+        task = self.recurring(
+            isAllDay=True,
+            timeZone="Europe/Paris",
+            startDate="2026-09-01T22:00:00.000+0000",
+            dueDate="2026-09-01T22:00:00.000+0000",
+            items=[{
+                "id": "item-1",
+                "title": "step",
+                "isAllDay": True,
+                "timeZone": "Mars/Olympus",
+                "startDate": "2026-09-01T22:00:00.000+0000",
+            }],
+        )
+        self.use_task(task)
+
+        with mock.patch.dict(os.environ, {"TZ": "Asia/Tokyo"}):
+            series = self.cli["set_task_status"](task["id"], self.cli["STATUS_DONE"])
+
+        self.assertEqual(series["items"][0]["startDate"], "2026-09-02T22:00:00.000+0000")
 
     def test_a_skipped_occurrence_is_not_rolled_back_onto(self):
         task = self.recurring(exDate=["2026-09-03T09:00:00.000+0000"])
@@ -339,19 +428,455 @@ class RecurrenceTimezoneTests(unittest.TestCase):
         # Still 9am locally a week later, which is one hour later in UTC.
         self.assertEqual(plan["series"]["dueDate"], "2026-11-06T14:00:00.000+0000")
 
-    def test_all_day_tasks_keep_their_midnight_marker(self):
-        task = {
+    def legacy_all_day(self, **fields):
+        return {
             "id": "task-1",
             "repeatFlag": "RRULE:FREQ=DAILY;INTERVAL=1",
             "isAllDay": True,
             "timeZone": "America/New_York",
             "startDate": "2026-10-30T00:00:00.000+0000",
             "dueDate": "2026-10-30T00:00:00.000+0000",
+            **fields,
         }
 
-        plan = self.cli["plan_recurring_completion"](task, "2026-10-30T14:00:00.000+0000")
+    def test_a_legacy_all_day_marker_rolls_forward_as_local_midnight(self):
+        plan = self.cli["plan_recurring_completion"](self.legacy_all_day(), "2026-10-30T14:00:00.000+0000")
 
-        self.assertEqual(plan["series"]["dueDate"], "2026-10-31T00:00:00.000+0000")
+        # The next day, written the way TickTick's apps write it: midnight
+        # New York, still on daylight time.
+        self.assertEqual(plan["series"]["dueDate"], "2026-10-31T04:00:00.000+0000")
+        self.assertEqual(plan["series"]["startDate"], "2026-10-31T04:00:00.000+0000")
+
+    def test_a_legacy_marker_west_of_utc_keeps_its_weekday(self):
+        plan = self.cli["plan_recurring_completion"](
+            self.legacy_all_day(repeatFlag="RRULE:FREQ=WEEKLY;BYDAY=FR"),
+            "2026-10-30T14:00:00.000+0000",
+        )
+
+        self.assertEqual(plan["series"]["dueDate"], "2026-11-06T05:00:00.000+0000")
+
+    def test_all_day_first_dates_and_skips_read_as_calendar_days(self):
+        plan = self.cli["plan_recurring_completion"](
+            self.legacy_all_day(
+                repeatFlag="RRULE:FREQ=DAILY;INTERVAL=2",
+                repeatFirstDate="2026-10-28T00:00:00.000+0000",
+                exDate=["2026-11-01T00:00:00.000+0000"],
+            ),
+            "2026-10-30T14:00:00.000+0000",
+        )
+
+        self.assertEqual(plan["series"]["dueDate"], "2026-11-03T05:00:00.000+0000")
+
+    def test_a_series_rolling_onto_a_day_the_zone_skipped_is_refused(self):
+        task = self.legacy_all_day(
+            timeZone="Pacific/Apia",
+            startDate="2011-12-29T10:00:00.000+0000",
+            dueDate="2011-12-29T10:00:00.000+0000",
+        )
+
+        with self.assertRaises(self.cli["UnsupportedRecurrence"]):
+            self.cli["plan_recurring_completion"](task, "2011-12-29T10:00:00.000+0000")
+
+    def test_a_timed_series_without_a_zone_repeats_in_the_machines_zone(self):
+        task = {
+            "id": "task-1",
+            "repeatFlag": "RRULE:FREQ=WEEKLY;INTERVAL=1",
+            "startDate": "2026-10-30T13:00:00.000+0000",
+            "dueDate": "2026-10-30T13:00:00.000+0000",
+        }
+
+        with mock.patch.dict(os.environ, {"TZ": "America/New_York"}):
+            plan = self.cli["plan_recurring_completion"](task, "2026-10-30T14:00:00.000+0000")
+
+        self.assertEqual(plan["series"]["dueDate"], "2026-11-06T14:00:00.000+0000")
+
+
+class CalendarDayTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.cli = load_cli()
+
+    def all_day(self, raw, zone_name):
+        return self.cli["calendar_day"](raw, ZoneInfo(zone_name), True)
+
+    def test_every_zone_reads_back_the_day_it_wrote_and_the_legacy_marker(self):
+        days = (date(2026, 1, 15), date(2026, 7, 15), date(2026, 3, 29), date(2026, 9, 6), date(2026, 11, 1))
+        failures = []
+        for name in sorted(available_timezones()):
+            zone = ZoneInfo(name)
+            for day in days:
+                stamp = self.cli["all_day_stamp"](day, zone)
+                if self.cli["parse_api_time"](stamp).astimezone(zone).date() != day:
+                    failures.append(("encoded off its day", name, day))
+                if self.cli["calendar_day"](stamp, zone, True) != day:
+                    failures.append(("native", name, day))
+                marker = f"{day.isoformat()}T00:00:00.000+0000"
+                if self.cli["calendar_day"](marker, zone, True) != day:
+                    failures.append(("legacy marker", name, day))
+        self.assertEqual(failures, [])
+
+    def test_tickticks_encoding_is_local_midnight(self):
+        self.assertEqual(
+            self.cli["all_day_stamp"](date(2026, 10, 7), ZoneInfo("Europe/Amsterdam")),
+            "2026-10-06T22:00:00.000+0000",
+        )
+        self.assertEqual(self.all_day("2026-10-06T22:00:00.000+0000", "Europe/Amsterdam"), date(2026, 10, 7))
+
+    def test_a_day_without_a_midnight_starts_at_the_transition(self):
+        # Santiago springs forward at midnight on 6 September 2026: 00:00
+        # never happens, and the day begins at 01:00 -03.
+        stamp = self.cli["all_day_stamp"](date(2026, 9, 6), ZoneInfo("America/Santiago"))
+        self.assertEqual(stamp, "2026-09-06T04:00:00.000+0000")
+        self.assertEqual(self.all_day(stamp, "America/Santiago"), date(2026, 9, 6))
+
+    def test_a_day_the_zone_skipped_has_no_stamp(self):
+        # Samoa jumped the date line and went from 29 to 31 December 2011.
+        with self.assertRaises(ValueError):
+            self.cli["all_day_stamp"](date(2011, 12, 30), ZoneInfo("Pacific/Apia"))
+
+    def test_a_stamp_from_another_zone_rounds_to_the_nearest_midnight(self):
+        self.assertEqual(self.all_day("2026-10-06T22:00:00.000+0000", "America/New_York"), date(2026, 10, 7))
+
+    def test_far_east_of_utc_the_legacy_marker_still_reads_its_own_day(self):
+        self.assertEqual(self.all_day("2026-10-30T00:00:00.000+0000", "Pacific/Kiritimati"), date(2026, 10, 30))
+
+    def test_a_timed_stamp_is_its_local_date(self):
+        self.assertEqual(
+            self.cli["calendar_day"]("2026-10-07T23:30:00.000+0000", ZoneInfo("Europe/Amsterdam"), False),
+            date(2026, 10, 8),
+        )
+
+    def test_nothing_to_read_is_no_day(self):
+        self.assertIsNone(self.cli["calendar_day"](None, ZoneInfo("UTC"), True))
+        self.assertIsNone(self.cli["calendar_day"]("soon", ZoneInfo("UTC"), True))
+
+
+@contextlib.contextmanager
+def machine_files(timezone_file=None, localtime_link=None):
+    """/etc/timezone and the /etc/localtime symlink as the CLI sees them."""
+    real_open, real_islink, real_readlink = open, os.path.islink, os.readlink
+
+    def fake_open(path, *args, **kwargs):
+        if path != "/etc/timezone":
+            return real_open(path, *args, **kwargs)
+        if timezone_file is None:
+            raise FileNotFoundError(path)
+        return io.StringIO(timezone_file + "\n")
+
+    def fake_islink(path):
+        return localtime_link is not None if path == "/etc/localtime" else real_islink(path)
+
+    def fake_readlink(path, *args, **kwargs):
+        return localtime_link if path == "/etc/localtime" else real_readlink(path, *args, **kwargs)
+
+    with mock.patch("builtins.open", fake_open), mock.patch("os.path.islink", fake_islink), \
+            mock.patch("os.readlink", fake_readlink):
+        yield
+
+
+@contextlib.contextmanager
+def libc_tz(tz):
+    """TZ as libc sees it too: date.today() only rereads TZ after tzset()."""
+    try:
+        with mock.patch.dict(os.environ, {"TZ": tz}):
+            time.tzset()
+            yield
+    finally:
+        time.tzset()
+
+
+class ZoneTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.cli = load_cli()
+
+    def machine_zone_under(self, tz):
+        with mock.patch.dict(os.environ, {"TZ": tz}):
+            return self.cli["zone_name"](self.cli["machine_zone"]())
+
+    def test_tz_names_the_machine_zone(self):
+        self.assertEqual(self.machine_zone_under("Asia/Tokyo"), "Asia/Tokyo")
+        self.assertEqual(self.machine_zone_under(":Asia/Tokyo"), "Asia/Tokyo")
+        self.assertEqual(self.machine_zone_under("/usr/share/zoneinfo/Asia/Tokyo"), "Asia/Tokyo")
+
+    def test_an_empty_tz_is_utc(self):
+        self.assertEqual(self.machine_zone_under(""), "UTC")
+
+    def test_a_tz_zoneinfo_cannot_load_is_ignored(self):
+        with mock.patch.dict(os.environ):
+            os.environ.pop("TZ", None)
+            unset = self.cli["zone_name"](self.cli["machine_zone"]())
+        self.assertEqual(self.machine_zone_under("UTC+3"), unset)
+
+    def test_the_machine_zone_is_found_where_libc_looks(self):
+        files = {"timezone_file": "Asia/Tokyo", "localtime_link": "../usr/share/zoneinfo/Europe/Paris"}
+        cases = [
+            ({"TZ": "America/New_York"}, files, "America/New_York"),
+            ({}, files, "Europe/Paris"),
+            ({}, {"timezone_file": "Asia/Tokyo"}, "Asia/Tokyo"),
+            ({}, {}, "UTC"),
+        ]
+        for env, etc, expected in cases:
+            with self.subTest(env=env, etc=etc), mock.patch.dict(os.environ, env), machine_files(**etc):
+                if not env:
+                    os.environ.pop("TZ", None)
+                self.assertEqual(self.cli["zone_name"](self.cli["machine_zone"]()), expected)
+
+    def test_a_posix_or_right_zone_path_names_the_plain_zone(self):
+        self.assertEqual(self.machine_zone_under("posix/Asia/Tokyo"), "Asia/Tokyo")
+        self.assertEqual(self.machine_zone_under(":/usr/share/zoneinfo/right/UTC"), "UTC")
+        with mock.patch.dict(os.environ), machine_files(localtime_link="/usr/share/zoneinfo/posix/Europe/Paris"):
+            os.environ.pop("TZ", None)
+            self.assertEqual(self.cli["zone_name"](self.cli["machine_zone"]()), "Europe/Paris")
+
+    def test_a_task_keeps_its_own_zone(self):
+        with mock.patch.dict(os.environ, {"TZ": "Asia/Tokyo"}):
+            zone = self.cli["task_zone"]({"timeZone": "Europe/Amsterdam"})
+        self.assertEqual(self.cli["zone_name"](zone), "Europe/Amsterdam")
+
+    def test_a_task_without_a_usable_zone_takes_the_machines(self):
+        with mock.patch.dict(os.environ, {"TZ": "Asia/Tokyo"}):
+            for task in ({}, {"timeZone": ""}, {"timeZone": "Mars/Olympus"}):
+                with self.subTest(task=task):
+                    self.assertEqual(self.cli["zone_name"](self.cli["task_zone"](task)), "Asia/Tokyo")
+
+
+AMSTERDAM_TASK = {
+    "id": "amsterdam",
+    "projectId": "project-1",
+    "status": 0,
+    "isAllDay": True,
+    "timeZone": "Europe/Amsterdam",
+    "startDate": "2026-10-06T22:00:00.000+0000",
+    "dueDate": "2026-10-06T22:00:00.000+0000",
+}
+LEGACY_TASK = {
+    "id": "legacy",
+    "projectId": "project-1",
+    "status": 0,
+    "isAllDay": True,
+    "timeZone": "America/New_York",
+    "startDate": "2026-10-30T00:00:00.000+0000",
+    "dueDate": "2026-10-30T00:00:00.000+0000",
+}
+TIMED_TASK = {
+    "id": "timed",
+    "projectId": "project-1",
+    "status": 0,
+    "isAllDay": False,
+    "timeZone": "Europe/Amsterdam",
+    "startDate": "2026-10-07T07:30:00.000+0000",
+    "dueDate": "2026-10-07T07:30:00.000+0000",
+}
+DERIVED_KEYS = {"allDayDates", "calendarDate"}
+
+
+class CachePublisherTests(unittest.TestCase):
+    def setUp(self):
+        state_home = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(mock.patch.dict(os.environ, {"XDG_STATE_HOME": state_home, "TZ": "America/New_York"}))
+        self.cli = load_cli()
+        self.globals = self.cli["save_cache"].__globals__
+        self.dispatched = []
+
+        def fake_batch_task(_session, add=None, update=None, delete=None):
+            self.dispatched.append({"add": add or [], "update": update or [], "delete": delete or []})
+            return {}
+
+        def fake_with_session(callback):
+            session = {"token": "<REDACTED>"}
+            return callback(session), session
+
+        self.globals["batch_task"] = fake_batch_task
+        self.globals["with_session"] = fake_with_session
+
+    def offline(self):
+        def unreachable(_callback):
+            raise self.cli["TickTickError"]("offline", transient=True)
+
+        self.globals["with_session"] = unreachable
+
+    def published(self):
+        with open(self.cli["DATA_PATH"], encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def seed(self, *tasks):
+        self.cli["save_cache"]({"syncedAt": 1, "tasks": [dict(t) for t in tasks]})
+
+    def assert_no_derived_keys(self, tasks):
+        for task in tasks:
+            self.assertEqual(DERIVED_KEYS & set(task), set(), task.get("id"))
+
+    def test_the_cache_has_one_publisher(self):
+        source = CLI_PATH.read_text(encoding="utf-8")
+        self.assertEqual(source.count("_write_private(DATA_PATH"), 1)
+        self.assertIn("_write_private(DATA_PATH", inspect.getsource(self.cli["save_cache"]))
+
+    def test_all_day_dates_are_read_in_each_tasks_zone(self):
+        self.seed(AMSTERDAM_TASK, LEGACY_TASK, TIMED_TASK)
+
+        cache = self.published()
+
+        self.assertEqual(cache["allDayDates"], {"amsterdam": "2026-10-07", "legacy": "2026-10-30"})
+        self.assertEqual(cache["tasks"], [AMSTERDAM_TASK, LEGACY_TASK, TIMED_TASK])
+
+    def test_a_stale_projection_does_not_survive_a_write(self):
+        self.cli["save_cache"]({"tasks": [dict(TIMED_TASK)], "allDayDates": {"gone": "2026-01-01"}})
+
+        self.assertEqual(self.published()["allDayDates"], {})
+
+    def test_an_offline_add_is_dated_in_the_same_write(self):
+        self.seed(TIMED_TASK)
+        self.offline()
+
+        task = self.cli["create_task"]("Pay rent", None, "2026-10-07")
+
+        cache = self.published()
+        self.assertEqual(cache["allDayDates"], {task["id"]: "2026-10-07"})
+        self.assert_no_derived_keys(cache["tasks"])
+        self.assert_no_derived_keys(entry["payload"]["task"] for entry in self.cli["read_outbox"]())
+
+    def test_an_error_stamp_publishes_the_projection(self):
+        self.cli["_write_private"](self.cli["DATA_PATH"], {"tasks": [dict(AMSTERDAM_TASK)]})
+
+        self.cli["write_error_cache"]("offline", False)
+
+        self.assertEqual(self.published()["allDayDates"], {"amsterdam": "2026-10-07"})
+
+    def test_a_skipped_sync_upgrades_a_cache_from_before_the_projection(self):
+        synced_at = int(time.time() * 1000)
+        self.cli["_write_private"](self.cli["DATA_PATH"], {"syncedAt": synced_at, "tasks": [dict(AMSTERDAM_TASK)]})
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.cli["cmd_sync"](argparse.Namespace(max_age=600, scope="full"))
+
+        cache = self.published()
+        self.assertEqual(cache["syncedAt"], synced_at)
+        self.assertEqual(cache["allDayDates"], {"amsterdam": "2026-10-07"})
+
+    def test_writes_to_ticktick_carry_the_task_as_it_was_sent(self):
+        recurring = dict(AMSTERDAM_TASK, id="series", repeatFlag="RRULE:FREQ=WEEKLY")
+        self.seed(AMSTERDAM_TASK, LEGACY_TASK, recurring)
+
+        self.cli["update_task"]("amsterdam", {"title": "Renamed"})
+        self.cli["set_task_status"]("legacy", self.cli["STATUS_DONE"])
+        self.cli["set_task_status"]("series", self.cli["STATUS_DONE"])
+
+        sent = [task for batch in self.dispatched for task in batch["add"] + batch["update"]]
+        self.assertEqual(len(sent), 4)
+        self.assert_no_derived_keys(sent)
+
+    def test_queued_writes_carry_the_task_as_it_was_sent(self):
+        self.seed(AMSTERDAM_TASK)
+        self.offline()
+
+        self.cli["update_task"]("amsterdam", {"due": "2026-10-08"})
+        for entry in self.cli["read_outbox"]():
+            self.cli["replay"](entry, {"token": "<REDACTED>"})
+
+        self.assert_no_derived_keys(self.published()["tasks"])
+        self.assertEqual(self.published()["allDayDates"], {"amsterdam": "2026-10-08"})
+        sent = [task for batch in self.dispatched for task in batch["update"]]
+        self.assertEqual(len(sent), 1)
+        self.assert_no_derived_keys(sent)
+
+
+class CacheContractTests(unittest.TestCase):
+    """The cache the panel reads, pinned in a fixture tests/model.test.js reads too."""
+
+    FIXTURE = Path(__file__).resolve().parent / "fixtures" / "all-day-cache.json"
+
+    def setUp(self):
+        state_home = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(mock.patch.dict(os.environ, {"XDG_STATE_HOME": state_home}))
+        self.cli = load_cli()
+
+    def test_the_cli_writes_the_fixtures_all_day_dates(self):
+        golden = json.loads(self.FIXTURE.read_text(encoding="utf-8"))
+        raw = {key: value for key, value in golden.items() if key != "allDayDates"}
+
+        self.cli["save_cache"](raw)
+
+        with open(self.cli["DATA_PATH"], encoding="utf-8") as handle:
+            self.assertEqual(json.load(handle)["allDayDates"], golden["allDayDates"])
+
+
+class DueWriterTests(unittest.TestCase):
+    def setUp(self):
+        state_home = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(mock.patch.dict(os.environ, {"XDG_STATE_HOME": state_home, "TZ": "America/New_York"}))
+        self.cli = load_cli()
+        self.globals = self.cli["create_task"].__globals__
+        self.globals["with_session"] = lambda callback: (callback({"token": "<REDACTED>"}), {})
+        self.globals["batch_task"] = lambda _session, **_writes: {}
+
+    def test_an_all_day_date_is_midnight_in_the_given_zone(self):
+        fields = self.cli["due_fields"]("2026-09-06", None, ZoneInfo("America/Santiago"))
+
+        self.assertEqual(
+            fields,
+            {"dueDate": "2026-09-06T04:00:00.000+0000", "startDate": "2026-09-06T04:00:00.000+0000", "isAllDay": True},
+        )
+
+    def test_a_day_the_zone_skipped_is_refused(self):
+        with self.assertRaises(self.cli["TickTickError"]):
+            self.cli["due_fields"]("2011-12-30", None, ZoneInfo("Pacific/Apia"))
+
+    def test_today_is_the_machines_today(self):
+        with libc_tz("Pacific/Kiritimati"):
+            fields = self.cli["due_fields"]("today", None, ZoneInfo("UTC"))
+
+        today = datetime.now(ZoneInfo("Pacific/Kiritimati")).date()
+        self.assertEqual(fields["dueDate"], f"{today.isoformat()}T00:00:00.000+0000")
+
+    def test_today_is_libcs_today_whatever_the_etc_files_say(self):
+        # libc reads "XYZ-14" as UTC+14; zoneinfo cannot load it. The files
+        # name UTC-12, 26 hours away, so the two never share a date.
+        with libc_tz("XYZ-14"), machine_files("Etc/GMT+12", "../usr/share/zoneinfo/Etc/GMT+12"):
+            today = self.cli["parse_due_date"]("today")
+        self.assertEqual(today, datetime.now(timezone(timedelta(hours=14))).date())
+
+    def test_a_new_task_records_a_posix_zone_by_its_plain_name(self):
+        with mock.patch.dict(os.environ, {"TZ": "posix/Asia/Tokyo"}):
+            task = self.cli["create_task"]("Pay rent", None, "2026-10-08")
+
+        self.assertEqual(task["timeZone"], "Asia/Tokyo")
+
+    def test_a_clock_time_stays_in_the_machines_zone(self):
+        fields = self.cli["due_fields"]("2026-10-07", "21:00", ZoneInfo("Pacific/Kiritimati"))
+
+        expected = self.cli["to_api_time"](datetime(2026, 10, 7, 21, 0))
+        self.assertEqual(fields, {"dueDate": expected, "startDate": expected, "isAllDay": False})
+
+    def test_a_new_task_records_the_machine_zone_it_was_dated_in(self):
+        with mock.patch.dict(os.environ, {"TZ": "Asia/Tokyo"}):
+            task = self.cli["create_task"]("Pay rent", None, "2026-10-08")
+
+        self.assertEqual(task["timeZone"], "Asia/Tokyo")
+        self.assertEqual(task["dueDate"], "2026-10-07T15:00:00.000+0000")
+
+    def test_an_edit_keeps_the_tasks_own_zone(self):
+        edited = self.cli["apply_edit"](dict(AMSTERDAM_TASK), {"due": "2026-10-08"})
+
+        self.assertEqual(edited["timeZone"], "Europe/Amsterdam")
+        self.assertEqual(edited["dueDate"], "2026-10-07T22:00:00.000+0000")
+        self.assertEqual(edited["startDate"], "2026-10-07T22:00:00.000+0000")
+
+    def test_an_edit_records_the_zone_on_a_task_without_one(self):
+        task = {key: value for key, value in AMSTERDAM_TASK.items() if key != "timeZone"}
+
+        edited = self.cli["apply_edit"](task, {"due": "2026-10-08"})
+
+        self.assertEqual(edited["timeZone"], "America/New_York")
+        self.assertEqual(edited["dueDate"], "2026-10-08T04:00:00.000+0000")
+
+    def test_an_edit_that_leaves_the_date_alone_leaves_the_zone_alone(self):
+        task = {key: value for key, value in AMSTERDAM_TASK.items() if key != "timeZone"}
+
+        edited = self.cli["apply_edit"](task, {"title": "Renamed"})
+
+        self.assertNotIn("timeZone", edited)
+        self.assertEqual(edited["dueDate"], AMSTERDAM_TASK["dueDate"])
 
 
 class MaterialisedOccurrenceTests(unittest.TestCase):

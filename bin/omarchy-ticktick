@@ -38,7 +38,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zoneinfo
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone, tzinfo
 
 DOMAIN = os.environ.get("TICKTICK_DOMAIN", "ticktick.com")
 API = f"https://api.{DOMAIN}/api/v2"
@@ -378,12 +378,8 @@ def next_occurrence_date(rule: dict, dtstart, after, excluded=()):
 
 def _excluded_dates(task: dict, zone) -> set:
     """Occurrences already skipped. Landing on one would undo the skip."""
-    skipped = set()
-    for raw in task.get("exDate") or []:
-        stamp = parse_api_time(raw)
-        if stamp is not None:
-            skipped.add(stamp.astimezone(zone).date())
-    return skipped
+    all_day = bool(task.get("isAllDay"))
+    return {calendar_day(raw, zone, all_day) for raw in task.get("exDate") or []} - {None}
 
 
 def _advance_from_completion(rule: dict, dtstart, finished, excluded=()):
@@ -417,40 +413,23 @@ def _advance_from_completion(rule: dict, dtstart, finished, excluded=()):
     return candidate
 
 
-def _task_zone(task: dict):
-    """The zone the task's wall-clock time is written in.
-
-    Whole-day arithmetic has to happen in that zone or a timed task drifts an
-    hour across a DST boundary. Falling back to UTC keeps the plugin working
-    on a machine without a tz database rather than refusing the completion.
-    """
-    name = task.get("timeZone")
-    if name:
-        try:
-            return zoneinfo.ZoneInfo(str(name))
-        except Exception:  # noqa: BLE001 - a missing zone is not worth failing a completion
-            pass
-    return timezone.utc
-
-
 def _shifted_dates(task: dict, zone, delta: timedelta) -> dict:
     """Move start and due by whole days, preserving duration and wall time.
 
-    Also used for a checklist item, which carries a `startDate` of its own
-    but takes its all-day flag from the task it belongs to.
+    Also used for a checklist item, through `_item_dates`.
     """
     moved = {}
     for key in ("startDate", "dueDate"):
         stamp = parse_api_time(task.get(key))
         if stamp is None:
             continue
-        local = stamp.astimezone(zone)
-        if task.get("isAllDay") and (local.hour, local.minute) != (0, 0):
-            # A literal UTC midnight marker, not an instant. TickTick's own
-            # apps write local midnight instead, which falls through to the
-            # wall-clock shift so it stays on midnight across a DST change.
-            moved[key] = to_api_time(stamp + delta)
+        if task.get("isAllDay"):
+            try:
+                moved[key] = all_day_stamp(read_all_day(stamp, zone) + delta, zone)
+            except ValueError as error:
+                raise UnsupportedRecurrence(str(error)) from None
         else:
+            local = stamp.astimezone(zone)
             moved[key] = to_api_time((local.replace(tzinfo=None) + delta).replace(tzinfo=zone))
     return moved
 
@@ -465,6 +444,24 @@ def _with_count(flag: str, count: int) -> str:
         else:
             parts.append(chunk)
     return f"{head}:{';'.join(parts)}"
+
+
+def _item_dates(item: dict, task: dict, zone, delta: timedelta) -> dict:
+    """A checklist item's `startDate`, moved with its task.
+
+    An item without an `isAllDay` of its own under an all-day task is a date
+    only if its stamp is exactly how a date is written in its zone; a 14:00
+    reminder stays at 14:00. The plugin never wrote its old UTC-midnight
+    marker on items, so that shape counts as a clock time here, and so does
+    an item an older roll-forward already pushed off midnight.
+    """
+    zone = _load_zone(item.get("timeZone")) or zone
+    if "isAllDay" in item:
+        all_day = bool(item["isAllDay"])
+    else:
+        stamp = parse_api_time(item.get("startDate"))
+        all_day = bool(task.get("isAllDay")) and stamp is not None and _is_date_stamp(stamp, zone)
+    return _shifted_dates({**item, "isAllDay": all_day}, zone, delta)
 
 
 def _completed_occurrence(task: dict, completed_time: str) -> dict:
@@ -511,7 +508,7 @@ def _advanced_series(task: dict, moved: dict, zone, delta: timedelta, completed_
             item,
             status=0,
             completedTime=None,
-            **_shifted_dates({**item, "isAllDay": task.get("isAllDay")}, zone, delta),
+            **_item_dates(item, task, zone, delta),
         )
         for item in task.get("items") or []
     ]
@@ -532,17 +529,16 @@ def plan_recurring_completion(task: dict, completed_time: str) -> dict | None:
     completion is the correct write rather than a refusal.
     """
     rule = parse_repeat_rule(task.get("repeatFlag"))
-    zone = _task_zone(task)
+    zone = task_zone(task)
+    all_day = bool(task.get("isAllDay"))
 
-    due = parse_api_time(task.get("dueDate") or task.get("startDate"))
-    if due is None:
+    due_day = calendar_day(task.get("dueDate") or task.get("startDate"), zone, all_day)
+    if due_day is None:
         raise UnsupportedRecurrence("it has no due date to advance")
-    due_local = due.astimezone(zone).date()
 
-    first = parse_api_time(task.get("repeatFirstDate"))
-    dtstart = first.astimezone(zone).date() if first else due_local
-    if due_local < dtstart:
-        dtstart = due_local
+    dtstart = calendar_day(task.get("repeatFirstDate"), zone, all_day) or due_day
+    if due_day < dtstart:
+        dtstart = due_day
     excluded = _excluded_dates(task, zone)
 
     if str(task.get("repeatFrom") or "") == REPEAT_FROM_COMPLETION:
@@ -552,18 +548,18 @@ def plan_recurring_completion(task: dict, completed_time: str) -> dict | None:
         # ahead of today — a birthday, a booking, anything imported with its
         # real date — moves on from its own due date, not from this
         # afternoon, or completing it once rewrites the day it falls on.
-        if anchor < due_local:
-            anchor = due_local
+        if anchor < due_day:
+            anchor = due_day
         next_date = _advance_from_completion(rule, dtstart, anchor, excluded)
     else:
-        next_date = next_occurrence_date(rule, dtstart, due_local, excluded)
+        next_date = next_occurrence_date(rule, dtstart, due_day, excluded)
 
     if rule["count"] is not None and rule["count"] <= 1:
         return None
     if rule["until"] and next_date > rule["until"]:
         return None
 
-    delta = next_date - due_local
+    delta = next_date - due_day
     return {
         "occurrence": _completed_occurrence(task, completed_time),
         "series": _advanced_series(
@@ -901,6 +897,132 @@ def parse_api_time(value: str | None) -> datetime | None:
 
 
 # --------------------------------------------------------------------------
+# calendar days
+#
+# An all-day task is a calendar date that TickTick carries as an instant.
+# Its own apps write midnight in the task's `timeZone`, so in Amsterdam
+# "Oct 7" arrives as 2026-10-06T22:00:00+0000; this plugin used to write a
+# literal T00:00:00+0000 instead. Only the task's zone tells the two apart,
+# and the panel cannot do zone math, so the date is read here and nowhere
+# else.
+
+
+def _load_zone(name) -> tzinfo | None:
+    if not name:
+        return None
+    try:
+        return zoneinfo.ZoneInfo(str(name))
+    except (zoneinfo.ZoneInfoNotFoundError, ValueError, OSError):
+        return None
+
+
+def _system_zone(path: str) -> tzinfo | None:
+    """The zone a TZ value or zoneinfo path names, by its plain key.
+
+    posix/ and right/ are copies of the same zones; recording "posix/Asia/Tokyo"
+    as a task's timeZone would hand TickTick a name it does not know.
+    """
+    key = path.split("zoneinfo/", 1)[-1]
+    head, _, rest = key.partition("/")
+    return _load_zone(rest if head in ("posix", "right") else key)
+
+
+def machine_zone() -> tzinfo:
+    """This machine's zone: TZ, then /etc/localtime, then /etc/timezone, then UTC.
+
+    That is the order libc and Qt use, so the zone agrees with `date` and the
+    panel; /etc/timezone is a Debian leftover neither reads. A value zoneinfo
+    cannot load ("UTC+3") falls through.
+    """
+    env = os.environ.get("TZ")
+    if env is not None:
+        name = env.lstrip(":")
+        if not name:
+            return timezone.utc
+        zone = _system_zone(name)
+        if zone is not None:
+            return zone
+    link = "/etc/localtime"
+    if os.path.islink(link):
+        zone = _system_zone(os.readlink(link))
+        if zone is not None:
+            return zone
+    try:
+        with open("/etc/timezone", encoding="utf-8") as handle:
+            zone = _system_zone(handle.read().strip())
+            if zone is not None:
+                return zone
+    except OSError:
+        pass
+    return timezone.utc
+
+
+def zone_name(zone: tzinfo) -> str:
+    return getattr(zone, "key", "UTC")
+
+
+def task_zone(task: dict) -> tzinfo:
+    return _load_zone(task.get("timeZone")) or machine_zone()
+
+
+def read_all_day(stamp: datetime, zone: tzinfo) -> date:
+    """The calendar date an all-day stamp names, read in the task's zone.
+
+    Local midnight is TickTick's encoding. UTC midnight is this plugin's
+    legacy marker; the two never coincide except at offset zero, where they
+    agree. Anything else is the nearest local midnight: a day whose midnight
+    does not exist starts after 00:00, and a stamp written under another
+    zone lands within twelve hours of the right one.
+    """
+    local = stamp.astimezone(zone)
+    if (local.hour, local.minute) == (0, 0):
+        return local.date()
+    utc = stamp.astimezone(timezone.utc)
+    if (utc.hour, utc.minute) == (0, 0):
+        return utc.date()
+    return local.date() + timedelta(days=1 if local.hour >= 12 else 0)
+
+
+def all_day_stamp(day: date, zone: tzinfo) -> str:
+    """TickTick's encoding of an all-day date: its first instant in `zone`, as UTC.
+
+    A midnight that falls in a DST gap resolves to the transition itself,
+    which is the first instant of that day. A day the zone skipped outright
+    has no instant at all, so it raises rather than naming the next one.
+    """
+    first = datetime(day.year, day.month, day.day, tzinfo=zone).astimezone(timezone.utc)
+    if first.astimezone(zone).date() != day:
+        raise ValueError(f"{day.isoformat()} does not exist in {zone_name(zone)}")
+    return to_api_time(first)
+
+
+def _is_date_stamp(stamp: datetime, zone) -> bool:
+    """True when `stamp` is exactly how some date is written in `zone`."""
+    try:
+        return all_day_stamp(read_all_day(stamp, zone), zone) == to_api_time(stamp)
+    except ValueError:
+        return False
+
+
+def calendar_day(raw: str | None, zone: tzinfo, all_day: bool) -> date | None:
+    stamp = parse_api_time(raw)
+    if stamp is None:
+        return None
+    return read_all_day(stamp, zone) if all_day else stamp.astimezone(zone).date()
+
+
+def all_day_dates(tasks: list) -> dict:
+    dates = {}
+    for task in tasks:
+        if not isinstance(task, dict) or not task.get("isAllDay") or not task.get("id"):
+            continue
+        day = calendar_day(task.get("dueDate"), task_zone(task), True)
+        if day is not None:
+            dates[str(task["id"])] = day.isoformat()
+    return dates
+
+
+# --------------------------------------------------------------------------
 # outbox
 #
 # Every write this plugin makes carries a client-generated id, so replaying a
@@ -997,7 +1119,7 @@ def apply_locally(kind: str, payload: dict) -> None:
         stats["todayPomoDuration"] = int(stats.get("todayPomoDuration", 0)) + int(minutes)
 
     cache["queued"] = len(read_outbox())
-    _write_private(DATA_PATH, cache)
+    save_cache(cache)
 
 
 def replay(entry: dict, session: dict) -> None:
@@ -1237,8 +1359,9 @@ def fetch_state(session: dict, scope: str = "full") -> dict:
     }
 
 
-def write_cache(state: dict) -> None:
-    _write_private(DATA_PATH, state)
+def save_cache(cache: dict) -> None:
+    cache["allDayDates"] = all_day_dates(cache.get("tasks") or [])
+    _write_private(DATA_PATH, cache)
 
 
 def write_error_cache(message: str, auth_required: bool) -> None:
@@ -1255,7 +1378,7 @@ def write_error_cache(message: str, auth_required: bool) -> None:
     cache.setdefault("habits", [])
     cache.setdefault("projects", [])
     cache.setdefault("checkins", {})
-    _write_private(DATA_PATH, cache)
+    save_cache(cache)
 
 
 def cached_task(task_id: str) -> dict:
@@ -1414,7 +1537,11 @@ def apply_edit(task: dict, fields: dict) -> dict:
     if "tags" in fields:
         edited["tags"] = [str(t).strip().lower() for t in (fields["tags"] or []) if str(t).strip()]
     if "due" in fields:
-        edited.update(due_fields(fields["due"], fields.get("time")))
+        own = _load_zone(task.get("timeZone"))
+        zone = own or machine_zone()
+        if own is None:
+            edited["timeZone"] = zone_name(zone)
+        edited.update(due_fields(fields["due"], fields.get("time"), zone))
     edited["modifiedTime"] = now_api_time()
     return edited
 
@@ -1512,6 +1639,7 @@ def create_task(
     time_value: str | None = None,
 ) -> dict:
     cache = _read_json(DATA_PATH)
+    zone = machine_zone()
     task = {
         "id": object_id(),
         "projectId": project_id or cache.get("inboxId") or "",
@@ -1522,14 +1650,14 @@ def create_task(
         # Tasks reference tags by their lowercase name, not their label.
         "tags": [str(t).strip().lower() for t in (tags or []) if str(t).strip()],
         "sortOrder": -int(time.time() * 1000),
-        "timeZone": local_timezone_name(),
+        "timeZone": zone_name(zone),
         "isAllDay": True,
         "items": [],
         "createdTime": now_api_time(),
         "modifiedTime": now_api_time(),
     }
     if due:
-        task.update(due_fields(due, time_value))
+        task.update(due_fields(due, time_value, zone))
 
     def call(session):
         return batch_task(session, add=[task])
@@ -1546,26 +1674,9 @@ def create_task(
     return task
 
 
-def local_timezone_name() -> str:
-    try:
-        with open("/etc/timezone", encoding="utf-8") as handle:
-            name = handle.read().strip()
-            if name:
-                return name
-    except OSError:
-        pass
-    link = "/etc/localtime"
-    if os.path.islink(link):
-        target = os.readlink(link)
-        if "zoneinfo/" in target:
-            return target.split("zoneinfo/", 1)[1]
-    return "UTC"
-
-
-def parse_due_date(value: str) -> datetime:
-    """A due word as a local calendar date, at midnight."""
+def parse_due_date(value: str) -> date:
     text = value.strip().lower()
-    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    today = date.today()
     if text == "today":
         return today
     if text == "tomorrow":
@@ -1573,13 +1684,9 @@ def parse_due_date(value: str) -> datetime:
     if text == "yesterday":
         return today - timedelta(days=1)
     try:
-        return datetime.strptime(value.strip(), "%Y-%m-%d")
+        return datetime.strptime(value.strip(), "%Y-%m-%d").date()
     except ValueError as error:
         raise TickTickError("--due wants today, tomorrow, yesterday, or YYYY-MM-DD") from error
-
-
-def parse_due_argument(value: str) -> str:
-    return parse_due_date(value).strftime("%Y-%m-%dT00:00:00.000+0000")
 
 
 def parse_time_argument(value: str) -> tuple[int, int | None]:
@@ -1609,22 +1716,25 @@ def parse_time_argument(value: str) -> tuple[int, int | None]:
     return start, end
 
 
-def due_fields(due: str, time_value: str | None = None) -> dict:
+def due_fields(due: str, time_value: str | None, all_day_zone: tzinfo) -> dict:
     """The three date fields a task carries, from the edit grammar.
 
-    A date alone is all-day at local midnight, as it always was. A clock
-    turns it into a real instant in this machine's timezone: a lone time is
-    a due hour, a range is a duration — and an end that is not after the
-    start spills into the next day, because "23:30-00:30" means overnight,
-    not nothing.
+    A date alone is all-day: midnight in `all_day_zone`, the task's own. A
+    clock turns it into a real instant in this machine's timezone, the one
+    the panel shows clocks in: a lone time is a due hour, a range is a duration —
+    and an end that is not after the start spills into the next day,
+    because "23:30-00:30" means overnight, not nothing.
     """
-    target = parse_due_date(due)
+    day = parse_due_date(due)
     if not time_value:
-        stamp = target.strftime("%Y-%m-%dT00:00:00.000+0000")
+        try:
+            stamp = all_day_stamp(day, all_day_zone)
+        except ValueError as error:
+            raise TickTickError(str(error)) from None
         return {"dueDate": stamp, "startDate": stamp, "isAllDay": True}
 
     start_minutes, end_minutes = parse_time_argument(time_value)
-    start_dt = target + timedelta(minutes=start_minutes)
+    start_dt = datetime(day.year, day.month, day.day) + timedelta(minutes=start_minutes)
     if end_minutes is None:
         stamp = to_api_time(start_dt)
         return {"dueDate": stamp, "startDate": stamp, "isAllDay": False}
@@ -1769,7 +1879,7 @@ def connect_with_token(raw_token: str, session: dict, email: str = "") -> dict:
     }
     state = fetch_state(candidate)
     _write_private(TOKEN_PATH, candidate)
-    write_cache(state)
+    save_cache(state)
     return state
 
 
@@ -1814,7 +1924,7 @@ def cmd_login(args) -> int:
     _write_private(TOKEN_PATH, session)
 
     state = fetch_state(session)
-    write_cache(state)
+    save_cache(state)
     print(
         f"Signed in as {email}: {len(state['tasks'])} open tasks, {len(state['habits'])} habits."
     )
@@ -1844,6 +1954,8 @@ def cmd_sync(args) -> int:
         synced_at = int(cache.get("syncedAt") or 0)
         age = (time.time() * 1000 - synced_at) / 1000
         if synced_at and age < float(max_age) and not read_outbox():
+            if "allDayDates" not in cache:
+                save_cache(cache)
             print(json.dumps({"ok": True, "skipped": True, "ageSeconds": round(age)}))
             return 0
     outbox = {"sent": 0, "queued": len(read_outbox()), "dropped": 0}
@@ -1862,7 +1974,7 @@ def cmd_sync(args) -> int:
         write_error_cache(str(error), error.auth_required)
         raise
     state["queued"] = len(read_outbox())
-    write_cache(state)
+    save_cache(state)
     print(json.dumps({
         "ok": True,
         "scope": scope,

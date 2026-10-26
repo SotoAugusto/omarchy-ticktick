@@ -25,25 +25,24 @@ function parseApiDate(value) {
   return isNaN(parsed.getTime()) ? null : parsed
 }
 
-// An all-day task is a calendar date wearing a timestamp, in one of two
-// shapes. TickTick's own apps store local midnight as UTC, so in a zone
-// east of UTC "Oct 7" arrives as "2026-10-06T22:00:00+0000"; tasks written
-// as a literal "T00:00:00+0000" mark the date in UTC. A stamp that lands on
-// local midnight is the first shape and takes its local date; anything else
-// is read literally, so west-of-UTC zones don't slide back a day either.
+// An all-day task is a calendar date wearing a timestamp, and only the
+// task's own zone says which date.
 function taskDueDate(task) {
   if (!task || !task.dueDate) return null
-  if (task.isAllDay) {
-    var instant = parseApiDate(task.dueDate)
-    if (instant && instant.getHours() === 0 && instant.getMinutes() === 0)
-      return startOfDay(instant)
-    var head = String(task.dueDate).slice(0, 10).split("-")
-    if (head.length === 3) {
-      var day = new Date(Number(head[0]), Number(head[1]) - 1, Number(head[2]))
-      return isNaN(day.getTime()) ? null : day
-    }
-  }
+  if (task.isAllDay) return localDay(task.calendarDate || legacyMarkerDay(task.dueDate))
   return parseApiDate(task.dueDate)
+}
+
+// The date this plugin's old all-day marker, "YYYY-MM-DDT00:00:00+0000", names.
+function legacyMarkerDay(stamp) {
+  return String(stamp).slice(0, 10)
+}
+
+function localDay(text) {
+  var head = String(text).split("-")
+  if (head.length !== 3) return null
+  var day = new Date(Number(head[0]), Number(head[1]) - 1, Number(head[2]))
+  return isNaN(day.getTime()) ? null : day
 }
 
 // A task with a duration keeps its start in `startDate`, while `dueDate`
@@ -1330,6 +1329,14 @@ function heldSuffix(count) {
 
 // ---- cache -------------------------------------------------------------
 
+function withCalendarDates(tasks, dates) {
+  for (var i = 0; i < tasks.length; i++) {
+    var task = tasks[i]
+    if (task && dates[task.id]) task.calendarDate = String(dates[task.id])
+  }
+  return tasks
+}
+
 function parseCache(text) {
   var empty = {
     syncedAt: 0,
@@ -1354,7 +1361,7 @@ function parseCache(text) {
       syncedAt: Number(parsed.syncedAt || 0),
       inboxId: String(parsed.inboxId || ""),
       projects: parsed.projects || [],
-      tasks: parsed.tasks || [],
+      tasks: withCalendarDates(parsed.tasks || [], parsed.allDayDates || {}),
       habits: parsed.habits || [],
       checkins: parsed.checkins || {},
       todayStamp: Number(parsed.todayStamp || 0),
