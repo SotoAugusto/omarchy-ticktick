@@ -1545,8 +1545,28 @@ def apply_edit(task: dict, fields: dict) -> dict:
         if own is None:
             edited["timeZone"] = zone_name(zone)
         edited.update(due_fields(fields["due"], fields.get("time"), zone))
+        if not fields.get("time"):
+            edited.update(_moved_span(task, parse_due_date(fields["due"]), zone))
     edited["modifiedTime"] = now_api_time()
     return edited
+
+
+def _moved_span(task: dict, due: date, zone: tzinfo) -> dict:
+    """A multi-day all-day task moved whole so it ends on `due`.
+
+    Both ends shift by the same number of days, so the span keeps its length
+    whether TickTick's `dueDate` names the last day or the day after it.
+    """
+    if not task.get("isAllDay"):
+        return {}
+    start = calendar_day(task.get("startDate"), zone, True)
+    end = calendar_day(task.get("dueDate"), zone, True)
+    if start is None or end is None or start >= end:
+        return {}
+    try:
+        return {"startDate": all_day_stamp(start + (due - end), zone)}
+    except ValueError as error:
+        raise TickTickError(str(error)) from None
 
 
 def update_task(task_id: str, fields: dict) -> dict:
