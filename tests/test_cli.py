@@ -674,6 +674,12 @@ AMSTERDAM_TASK = {
     "startDate": "2026-10-06T22:00:00.000+0000",
     "dueDate": "2026-10-06T22:00:00.000+0000",
 }
+AMSTERDAM_SPAN = {
+    **AMSTERDAM_TASK,
+    "id": "trip",
+    "startDate": "2026-08-10T22:00:00.000+0000",
+    "dueDate": "2026-08-14T22:00:00.000+0000",
+}
 LEGACY_TASK = {
     "id": "legacy",
     "projectId": "project-1",
@@ -790,6 +796,15 @@ class CachePublisherTests(unittest.TestCase):
         self.assertEqual(len(sent), 4)
         self.assert_no_derived_keys(sent)
 
+    def test_a_queued_edit_keeps_the_day_it_was_made(self):
+        self.seed(AMSTERDAM_SPAN)
+        self.offline()
+
+        self.cli["update_task"]("trip", {"title": "Trip", "due": "today"})
+
+        [entry] = self.cli["read_outbox"]()
+        self.assertEqual(entry["payload"]["fields"]["due"], self.cli["parse_due_date"]("today").isoformat())
+
     def test_queued_writes_carry_the_task_as_it_was_sent(self):
         self.seed(AMSTERDAM_TASK)
         self.offline()
@@ -902,6 +917,47 @@ class DueWriterTests(unittest.TestCase):
         self.assertNotIn("timeZone", edited)
         self.assertEqual(edited["dueDate"], AMSTERDAM_TASK["dueDate"])
 
+    def test_an_edit_on_the_last_day_keeps_a_multi_day_span(self):
+        trip = dict(AMSTERDAM_SPAN)
+
+        edited = self.cli["apply_edit"](trip, {"title": "Trip", "due": "2026-08-15"})
+
+        self.assertEqual(edited["startDate"], AMSTERDAM_SPAN["startDate"])
+        self.assertEqual(edited["dueDate"], AMSTERDAM_SPAN["dueDate"])
+
+    def test_a_new_day_moves_a_multi_day_span_whole(self):
+        trip = dict(AMSTERDAM_SPAN)
+
+        edited = self.cli["apply_edit"](trip, {"due": "2026-08-20"})
+
+        self.assertEqual(edited["startDate"], "2026-08-15T22:00:00.000+0000")
+        self.assertEqual(edited["dueDate"], "2026-08-19T22:00:00.000+0000")
+        self.assertTrue(edited["isAllDay"])
+
+    def test_a_clock_turns_a_multi_day_span_into_one_timed_day(self):
+        trip = dict(AMSTERDAM_SPAN)
+
+        edited = self.cli["apply_edit"](trip, {"due": "2026-08-15", "time": "09:00"})
+
+        self.assertFalse(edited["isAllDay"])
+        self.assertEqual(edited["startDate"], edited["dueDate"])
+
+    def test_a_legacy_marker_span_keeps_its_days(self):
+        trip = dict(AMSTERDAM_SPAN, startDate="2026-08-11T00:00:00.000+0000", dueDate="2026-08-15T00:00:00.000+0000")
+
+        edited = self.cli["apply_edit"](trip, {"due": "2026-08-15"})
+
+        self.assertEqual(edited["startDate"], AMSTERDAM_SPAN["startDate"])
+        self.assertEqual(edited["dueDate"], AMSTERDAM_SPAN["dueDate"])
+
+    def test_a_span_without_a_zone_moves_on_the_machines_days(self):
+        trip = {key: value for key, value in AMSTERDAM_SPAN.items() if key != "timeZone"}
+        trip.update(startDate="2026-08-11T04:00:00.000+0000", dueDate="2026-08-15T04:00:00.000+0000")
+
+        edited = self.cli["apply_edit"](trip, {"due": "2026-08-20"})
+
+        self.assertEqual(edited["startDate"], "2026-08-16T04:00:00.000+0000")
+        self.assertEqual(edited["dueDate"], "2026-08-20T04:00:00.000+0000")
 
 class MaterialisedOccurrenceTests(unittest.TestCase):
     """A dated instance of a series is finished, not rolled forward.
