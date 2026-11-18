@@ -1544,9 +1544,10 @@ def apply_edit(task: dict, fields: dict) -> dict:
         zone = own or machine_zone()
         if own is None:
             edited["timeZone"] = zone_name(zone)
-        edited.update(due_fields(fields["due"], fields.get("time"), zone))
+        day = parse_due_date(fields["due"])
+        edited.update(due_fields(day.isoformat(), fields.get("time"), zone))
         if not fields.get("time"):
-            edited.update(_moved_span(task, parse_due_date(fields["due"]), zone))
+            edited.update(_moved_span(task, day, zone))
     edited["modifiedTime"] = now_api_time()
     return edited
 
@@ -1570,6 +1571,9 @@ def _moved_span(task: dict, due: date, zone: tzinfo) -> dict:
 
 
 def update_task(task_id: str, fields: dict) -> dict:
+    # "today" is resolved now, so an edit replayed after midnight keeps its day.
+    if "due" in fields:
+        fields = {**fields, "due": parse_due_date(fields["due"]).isoformat()}
     holder = {}
 
     def call(session):
